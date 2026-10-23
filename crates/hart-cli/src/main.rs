@@ -249,21 +249,33 @@ impl Session<'_> {
     }
 
     fn run(&mut self, images: &Images, input: &Receiver<Vec<u8>>) -> Result<Outcome, String> {
-        let mut board = images.build(self.args)?;
+        let mut input_open = true;
+        loop {
+            let mut board = images.build(self.args)?;
+            let next = self.drive(&mut board, input, &mut input_open);
+            self.total_insns += board.instret();
+            match next {
+                Some(outcome) => return Ok(outcome),
+                None => continue,
+            }
+        }
+    }
+
+    /// Runs one board until the session ends (Some) or the guest reboots (None).
+    fn drive(&mut self, board: &mut Board, input: &Receiver<Vec<u8>>, input_open: &mut bool) -> Option<Outcome> {
         let mut stdout = io::stdout().lock();
         let mut out = Vec::new();
-        let mut input_open = true;
         let deadline = self.args.timeout.map(|s| self.started + Duration::from_secs_f64(s));
         loop {
-            while input_open {
+            while *input_open {
                 match input.try_recv() {
                     Ok(bytes) => {
-                        if let Some(outcome) = self.handle_input(&mut board, &bytes) {
-                            return Ok(outcome);
+                        if let Some(outcome) = self.handle_input(board, &bytes) {
+                            return Some(outcome);
                         }
                     }
                     Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => input_open = false,
+                    Err(TryRecvError::Disconnected) => *input_open = false,
                 }
             }
 
@@ -271,7 +283,7 @@ impl Session<'_> {
             if let Some(max) = self.args.max_insns {
                 let done = self.total_insns + board.instret();
                 if done >= max {
-                    return Ok(Outcome::Message(EXIT_LIMIT, format!("instruction limit ({max}) reached")));
+                    return Some(Outcome::Message(EXIT_LIMIT, format!("instruction limit ({max}) reached")));
                 }
                 slice = slice.min(max - done);
             }
@@ -285,47 +297,27 @@ impl Session<'_> {
             }
             if let Some(watch) = &mut self.watch {
                 if watch.seen(&out) {
-                    self.total_insns += board.instret();
-                    return Ok(Outcome::Exit(0));
+                    return Some(Outcome::Exit(0));
                 }
             }
             if let Some(script) = &mut self.script {
                 match script.on_output(&out) {
                     Some(ScriptEvent::Type(line)) => board.push_input(&line),
-                    Some(ScriptEvent::Finished) => {
-                        self.total_insns += board.instret();
-                        return Ok(Outcome::Exit(0));
-                    }
+                    Some(ScriptEvent::Finished) => return Some(Outcome::Exit(0)),
                     None => {}
                 }
             }
 
             match board.power_state() {
                 PowerState::Running => {}
-                PowerState::PowerOff => {
-                    self.total_insns += board.instret();
-                    return Ok(Outcome::Exit(0));
-                }
-                PowerState::Exit(0) => {
-                    self.total_insns += board.instret();
-                    return Ok(Outcome::Exit(0));
-                }
-                PowerState::Exit(code) => {
-                    self.total_insns += board.instret();
-                    return Ok(Outcome::Message(1, format!("guest exited with code {code}")));
-                }
-                PowerState::Reboot => {
-                    self.total_insns += board.instret();
-                    drop(board);
-                    board = images.build(self.args)?;
-                    continue;
-                }
+                PowerState::PowerOff | PowerState::Exit(0) => return Some(Outcome::Exit(0)),
+                PowerState::Exit(code) => return Some(Outcome::Message(1, format!("guest exited with code {code}"))),
+                PowerState::Reboot => return None,
             }
 
             if let Some(deadline) = deadline {
                 if Instant::now() >= deadline {
-                    self.total_insns += board.instret();
-                    return Ok(Outcome::Message(EXIT_LIMIT, "timeout reached".to_string()));
+                    return Some(Outcome::Message(EXIT_LIMIT, "timeout reached".to_string()));
                 }
             }
 
@@ -333,18 +325,18 @@ impl Session<'_> {
                 // Sleep until the next timer interrupt or host input.
                 let wait = board.ns_until_timer().map_or(Duration::from_millis(50), Duration::from_nanos);
                 let wait = wait.min(Duration::from_millis(50));
-                if !input_open {
+                if !*input_open {
                     std::thread::sleep(wait);
                     continue;
                 }
                 match input.recv_timeout(wait) {
                     Ok(bytes) => {
-                        if let Some(outcome) = self.handle_input(&mut board, &bytes) {
-                            return Ok(outcome);
+                        if let Some(outcome) = self.handle_input(board, &bytes) {
+                            return Some(outcome);
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => input_open = false,
+                    Err(RecvTimeoutError::Disconnected) => *input_open = false,
                 }
             }
         }

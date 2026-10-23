@@ -85,9 +85,11 @@ fn elf_failure_exits_one_and_reports_the_code() {
 }
 
 #[test]
-fn instruction_limit_exits_124() {
-    let out = run_elf("loop.elf", &[0x0000_006f], &["-m", "1", "--max-insns", "20000"]);
+fn instruction_limit_exits_124_and_counts_the_run() {
+    let out = run_elf("loop.elf", &[0x0000_006f], &["-m", "1", "--max-insns", "20000", "--stats"]);
     assert_eq!(out.status.code(), Some(124));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("hart: 20000 instructions"), "{stderr}");
 }
 
 #[test]
