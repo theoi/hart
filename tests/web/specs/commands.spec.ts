@@ -2,53 +2,55 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
-import { pageInfo, runCommand, waitForPrompt } from '../lib/hart';
-import { expectedText, loadScript } from '../lib/script';
+import { bootText, pageInfo, renderedForm, runCommand, waitForPrompt } from '../lib/hart';
+import { applyCheck, loadScript } from '../lib/script';
 
+// Promise acceptance 5 (functional part) and 6: boot, then type the shared command script
+// through the terminal and check each output.
 const script = loadScript();
-const BOOT_TIMEOUT = Number(process.env.HART_BOOT_TIMEOUT_MS ?? 180_000);
-const COMMAND_TIMEOUT = 120_000;
 const resultsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'results');
 
 test('boots to a shell and runs the command script', async ({ page, baseURL, browser }, testInfo) => {
-  test.setTimeout(BOOT_TIMEOUT + script.commands.length * COMMAND_TIMEOUT);
+  test.setTimeout(script.bootTimeoutMs + script.commands.length * script.commandTimeoutMs + 30_000);
   const start = Date.now();
   await page.goto(baseURL!, { waitUntil: 'commit' });
-  await waitForPrompt(page, BOOT_TIMEOUT);
+  await waitForPrompt(page, script, script.bootTimeoutMs);
   const bootMs = Date.now() - start;
   const info = await pageInfo(page);
   console.log(`${testInfo.project.name}: prompt after ${(bootMs / 1000).toFixed(2)} s (${info.backend}, ${info.guest}); script ${script.source}`);
 
-  const commands: { input: string; output: string }[] = [];
-  for (const cmd of script.commands) {
-    await test.step(cmd.input, async () => {
-      const r = await runCommand(page, cmd.input, script.prompt, COMMAND_TIMEOUT);
-      expect(r.echo, 'the shell echoes the typed command').toContain(cmd.input);
-      for (const s of cmd.expect.contains ?? []) {
-        expect(r.output, `console output of ${cmd.input}`).toContain(s);
-        expect(r.rendered, `terminal after ${cmd.input}`).toContain(s);
-      }
-      const want = expectedText(script, cmd.expect);
-      if (want !== undefined) {
-        expect(r.output, `console output of ${cmd.input}`).toBe(want);
-        // The rendered terminal drops trailing blanks, so compare right-trimmed lines.
-        const block = want.split('\n').map((l) => l.trimEnd()).join('\n').trimEnd();
-        expect(r.rendered, `terminal after ${cmd.input}`).toContain(block);
-      }
-      commands.push({ input: cmd.input, output: r.output });
-    });
+  if (script.banner !== null) {
+    expect(await bootText(page), 'banner on the line before the first prompt').toContain(`${script.banner}\n${script.prompt.text}`);
   }
 
-  mkdirSync(resultsDir, { recursive: true });
-  const report = {
-    url: baseURL,
-    browser: `${testInfo.project.name} ${browser.version()}`,
-    date: new Date().toISOString(),
-    script: script.source,
-    bootMs,
-    backend: info.backend,
-    guest: info.guest,
-    commands,
-  };
-  writeFileSync(join(resultsDir, `functional-${testInfo.project.name}.json`), JSON.stringify(report, null, 2) + '\n');
+  const results: { id: string; input: string; pass: boolean; output: string; failures: string[] }[] = [];
+  try {
+    for (const cmd of script.commands) {
+      await test.step(`${cmd.id}: ${cmd.input}`, async () => {
+        const r = await runCommand(page, script, cmd.input);
+        const failures = cmd.checks.map((c) => applyCheck(script, c, r.output)).filter((f): f is string => f !== null);
+        const shown = r.rendered.includes(renderedForm(r.output));
+        if (!shown) failures.push('the terminal does not show the output');
+        results.push({ id: cmd.id, input: cmd.input, pass: failures.length === 0, output: r.output, failures });
+        // Soft, so every command runs and is reported even after a failure.
+        expect.soft(r.echo, 'the shell echoes the typed command').toContain(cmd.input);
+        expect.soft(failures, `checks for ${cmd.id}; output was:\n${r.output}`).toEqual([]);
+      });
+    }
+  } finally {
+    mkdirSync(resultsDir, { recursive: true });
+    const report = {
+      url: baseURL,
+      browser: `${testInfo.project.name} ${browser.version()}`,
+      date: new Date().toISOString(),
+      script: script.source,
+      prompt: script.prompt,
+      bootMs,
+      backend: info.backend,
+      guest: info.guest,
+      pass: results.length === script.commands.length && results.every((r) => r.pass),
+      commands: results,
+    };
+    writeFileSync(join(resultsDir, `functional-${testInfo.project.name}.json`), JSON.stringify(report, null, 2) + '\n');
+  }
 });

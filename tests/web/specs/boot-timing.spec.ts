@@ -5,13 +5,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { pageInfo, waitForPrompt } from '../lib/hart';
+import { loadScript } from '../lib/script';
 
 // D5: navigation start to the shell prompt appearing in the terminal, headless Chromium,
 // median of at least five runs, each in a fresh browser context (cold cache).
 const RUNS = Math.max(1, Number(process.env.HART_TIMING_RUNS ?? 5));
 const LIMIT_MS = 30_000;
 const STRETCH_MS = 10_000;
-const BOOT_TIMEOUT = Number(process.env.HART_BOOT_TIMEOUT_MS ?? 180_000);
+const script = loadScript();
+const BOOT_TIMEOUT = script.bootTimeoutMs;
 
 const resultsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'results');
 
@@ -38,17 +40,19 @@ test('D5: boots to the shell prompt in headless Chromium', async ({ browser, bas
     const page = await context.newPage();
     const start = Date.now();
     await page.goto(baseURL!, { waitUntil: 'commit' });
-    await waitForPrompt(page, BOOT_TIMEOUT);
+    await waitForPrompt(page, script, BOOT_TIMEOUT);
     const ms = Date.now() - start;
     const info = await pageInfo(page);
-    runs.push({ run: i, ms, inPageMs: info.promptAt, backend: info.backend, guest: info.guest, instret: info.instret, mips: info.mips });
-    console.log(`run ${i}: ${(ms / 1000).toFixed(2)} s to prompt (in-page ${((info.promptAt ?? 0) / 1000).toFixed(2)} s, ${info.backend}, ${Math.round(info.mips ?? 0)} MIPS)`);
+    const avgMips = info.busyMs > 0 ? info.instret / info.busyMs / 1000 : null;
+    runs.push({ run: i, ms, inPageMs: info.promptAt, backend: info.backend, guest: info.guest, instret: info.instret, busyMs: info.busyMs, avgMips });
+    console.log(`run ${i}: ${(ms / 1000).toFixed(2)} s to prompt (in-page ${((info.promptAt ?? 0) / 1000).toFixed(2)} s, ${info.backend}, ${(info.instret / 1e6).toFixed(0)}M insns, ${avgMips?.toFixed(1)} MIPS)`);
     await context.close();
   }
   const times = runs.map((r) => r.ms);
   const med = median(times);
   const report = {
-    measured: 'navigation start (page.goto) to shell prompt at the terminal cursor, wall clock from the test process',
+    measured: 'navigation start (page.goto) to the shell prompt at the end of the console output and at the terminal cursor, wall clock from the test process',
+    prompt: script.prompt,
     url: baseURL,
     commit: gitCommit(),
     date: new Date().toISOString(),

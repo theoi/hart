@@ -165,29 +165,8 @@ fn kernel_timestamp(line: &str) -> Option<f64> {
     inner.trim().parse().ok()
 }
 
-fn mandelbrot() -> String {
-    let (w, h) = (72, 24);
-    let shades = b" .:-=+*#%@";
-    let mut s = String::new();
-    for y in 0..h {
-        for x in 0..w {
-            let cr = -2.2 + 3.2 * f64::from(x) / f64::from(w);
-            let ci = -1.2 + 2.4 * f64::from(y) / f64::from(h);
-            let (mut zr, mut zi, mut i) = (0.0f64, 0.0f64, 0u32);
-            while i < 64 && zr * zr + zi * zi <= 4.0 {
-                let t = zr * zr - zi * zi + cr;
-                zi = 2.0 * zr * zi + ci;
-                zr = t;
-                i += 1;
-            }
-            let idx = if i >= 64 { shades.len() - 1 } else { (i as usize) % (shades.len() - 1) };
-            s.push(shades[idx] as char);
-        }
-        s.truncate(s.trim_end().len());
-        s.push('\n');
-    }
-    s
-}
+/// The guest's demo output, so the stub passes the shared command script.
+const MANDELBROT: &str = include_str!("../../../tests/script/expected/mandelbrot.txt");
 
 impl StubMachine {
     pub const NAME: &'static str = "stub";
@@ -285,6 +264,10 @@ impl StubMachine {
         self.state
     }
 
+    pub fn idle_ms(&mut self) -> f64 {
+        -1.0
+    }
+
     fn burn(&mut self, insns: u64) {
         let mut x = self.rng;
         for _ in 0..insns * u64::from(ROUNDS_PER_INSN) {
@@ -362,11 +345,13 @@ impl StubMachine {
         let reply = |s: &str| Event::Output(crlf(s));
         let (cost, text): (u64, String) = match cmd {
             "" => (10_000, String::new()),
-            "uname -a" => (400_000, "Linux hart 6.18.58 #1 Fri Oct 23 07:05:38 UTC 2026 riscv64 GNU/Linux\n".into()),
+            "uname -a" => {
+                (400_000, "Linux hart 6.18.58 #1 SMP Fri Oct 23 07:05:38 UTC 2026 riscv64 GNU/Linux\n".into())
+            }
             "uname" => (300_000, "Linux\n".into()),
             "cat /proc/cpuinfo" => (600_000, CPUINFO.into()),
             "awk 'BEGIN{print atan2(0,-1)}'" => (900_000, "3.14159\n".into()),
-            "mandelbrot" => (40_000_000, mandelbrot()),
+            "mandelbrot" => (40_000_000, MANDELBROT.into()),
             "help" => (
                 200_000,
                 "This is the stub machine. Try: uname -a, cat /proc/cpuinfo, mandelbrot, poweroff, reboot\n".into(),

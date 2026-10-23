@@ -97,4 +97,10 @@ impl Machine {
     pub fn powered_off(&self) -> bool {
         self.inner.state() == RunState::PoweredOff
     }
+
+    /// While [`RunState::Idle`], milliseconds until the next timer interrupt could wake the
+    /// guest, or -1 if only console input can.
+    pub fn idle_ms(&mut self) -> f64 {
+        self.inner.idle_ms()
+    }
 }

@@ -116,6 +116,7 @@ let startedAt: number | null = null;
 let stoppedAt: number | null = null;
 let instret = 0;
 let mips: number | null = null;
+let busyMs = 0;
 let errorMessage = '';
 let progress = { loaded: 0, total: 0 };
 
@@ -141,10 +142,15 @@ function transcript(from = 0): string {
   return joined.slice(Math.max(0, from - transcriptBase));
 }
 
-function promptVisible(): boolean {
+/** The cursor line up to the cursor, trailing blanks included. */
+function textBeforeCursor(): string {
   const buf = term.buffer.active;
   const line = buf.getLine(buf.baseY + buf.cursorY);
-  return !!line && PROMPT_RE.test(line.translateToString(false, 0, buf.cursorX));
+  return line ? line.translateToString(false, 0, buf.cursorX) : '';
+}
+
+function promptVisible(): boolean {
+  return PROMPT_RE.test(textBeforeCursor());
 }
 
 function terminalText(): string {
@@ -173,7 +179,10 @@ declare global {
       readonly promptAt: number | null;
       readonly instret: number;
       readonly mips: number | null;
+      /** Milliseconds the current machine has spent executing instructions. */
+      readonly busyMs: number;
       promptVisible(): boolean;
+      textBeforeCursor(): string;
       terminalText(): string;
       transcript(from?: number): string;
       transcriptLength(): number;
@@ -204,7 +213,11 @@ window.hart = {
   get mips() {
     return mips;
   },
+  get busyMs() {
+    return busyMs;
+  },
   promptVisible,
+  textBeforeCursor,
   terminalText,
   transcript,
   transcriptLength: () => transcriptLen,
@@ -352,6 +365,7 @@ function onWorkerMessage(msg: FromWorker): void {
     }
     case 'stats':
       instret = msg.instret;
+      busyMs += msg.busyMs;
       if (msg.busyMs >= 20) {
         const rate = msg.insns / msg.busyMs / 1000;
         mips = mips === null ? rate : mips * 0.5 + rate * 0.5;
@@ -388,6 +402,7 @@ function beginBoot(): void {
   bootStart = performance.now();
   bootMs = null;
   mips = null;
+  busyMs = 0;
   state = 'booting';
 }
 

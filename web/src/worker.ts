@@ -17,7 +17,8 @@ const SLICE_MS = 16;
 const CALL_MS = 2;
 const STATS_MS = 250;
 const PROGRESS_MS = 50;
-const IDLE_SLEEP_MS = 4;
+/** Longest idle sleep; console input wakes the worker earlier. */
+const MAX_IDLE_SLEEP_MS = 100;
 const MAX_BATCH = 1 << 26;
 
 let manifest: Manifest | null = null;
@@ -194,7 +195,12 @@ async function runLoop(gen: number): Promise<void> {
       start();
       return;
     }
-    if (rs === RunState.Idle) await sleep(IDLE_SLEEP_MS);
-    else await yieldToEventLoop();
+    if (rs === RunState.Idle) {
+      const ms = m.idle_ms();
+      if (ms >= 0 && ms < 1) await yieldToEventLoop();
+      else await sleep(ms < 0 ? MAX_IDLE_SLEEP_MS : Math.min(ms, MAX_IDLE_SLEEP_MS));
+    } else {
+      await yieldToEventLoop();
+    }
   }
 }

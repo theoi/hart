@@ -1,9 +1,0 @@
-{
-  "prompt": "~ # ",
-  "commands": [
-    { "input": "uname -a", "expect": { "contains": ["Linux hart", "riscv64"] } },
-    { "input": "cat /proc/cpuinfo", "expect": { "contains": ["rv64imafdc", "sv39"] } },
-    { "input": "awk 'BEGIN{print atan2(0,-1)}'", "expect": { "equals": "3.14159\n" } },
-    { "input": "mandelbrot", "expect": { "equalsFile": "expected/mandelbrot.stub.txt" } }
-  ]
-}

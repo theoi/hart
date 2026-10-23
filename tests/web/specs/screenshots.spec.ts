@@ -16,12 +16,13 @@ const script = loadScript();
 
 for (const size of sizes) {
   test(`page at ${size.name}`, async ({ browser, baseURL, browserName }) => {
+    test.setTimeout(script.bootTimeoutMs + 60_000);
     mkdirSync(outDir, { recursive: true });
     const context = await browser.newContext({ viewport: { width: size.width, height: size.height } });
     const page = await context.newPage();
     await page.goto(baseURL!);
-    await waitForPrompt(page, 180_000);
-    await runCommand(page, 'uname -a', script.prompt, 60_000);
+    await waitForPrompt(page, script, script.bootTimeoutMs);
+    await runCommand(page, script, 'uname -a');
     // Let the status line show a speed reading and a few seconds of uptime.
     await page.waitForTimeout(1500);
     await page.screenshot({ path: join(outDir, `${browserName}-${size.name}.png`) });
