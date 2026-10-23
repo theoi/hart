@@ -313,6 +313,14 @@ a:hover {
   font-weight: 600;
 }
 
+.checks a {
+  text-decoration-color: rgba(245, 181, 63, 0.4);
+}
+
+.checks a:hover strong {
+  color: var(--accent);
+}
+
 .about code {
   font: 13px var(--mono);
   color: var(--text);

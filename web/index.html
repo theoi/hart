@@ -57,8 +57,8 @@
               WebAssembly.
             </p>
             <p>
-              It runs in a Web Worker in this tab and boots unmodified upstream guest software: OpenSBI firmware, a
-              Linux LTS kernel, and a BusyBox shell. Nothing is sent to a server.
+              It runs in a Web Worker in this tab and boots unmodified upstream guest software: OpenSBI 1.8 firmware, a
+              Linux 6.18 LTS kernel, and a BusyBox shell. Nothing is sent to a server.
             </p>
             <p class="try">
               Try
@@ -71,33 +71,35 @@
           <article class="about-col">
             <h2>How it was validated</h2>
             <ul class="checks">
-              <li><strong>riscv-tests</strong>: every rv64 ui, um, ua, uc, uf, ud, mi, and si test passes.</li>
-              <li><strong>riscv-arch-test</strong> (ACT4): expected results from the Sail reference model, interrupts included.</li>
-              <li><strong>Berkeley TestFloat</strong>: the FPU is bit-exact in every rounding mode, with exact flags.</li>
-              <li><strong>Spike</strong>: instruction-by-instruction commit logs match the reference simulator, for random programs and the Linux boot.</li>
-              <li><strong>Browser tests</strong>: Playwright boots this page in Chromium and Firefox and checks a command script.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/riscv-tests" target="_blank" rel="noopener"><strong>riscv-tests</strong></a>: every rv64 ui, um, ua, uc, uf, ud, mi, and si test passes.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/act4" target="_blank" rel="noopener"><strong>riscv-arch-test</strong></a> (ACT4): expected results from the Sail reference model, interrupts included.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/testfloat" target="_blank" rel="noopener"><strong>Berkeley TestFloat</strong></a>: the FPU is bit-exact in every rounding mode, with exact flags.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/diff" target="_blank" rel="noopener"><strong>Spike</strong></a>: instruction-by-instruction commit logs match the reference simulator, for random programs and the Linux boot.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/web" target="_blank" rel="noopener"><strong>Browser tests</strong></a>: Playwright boots this page in Chromium and Firefox and checks a command script.</li>
             </ul>
           </article>
 
           <article class="about-col">
             <h2>Build it yourself</h2>
-            <pre class="code"><code>git clone https://github.com/theoi/hart
-cd hart
-cargo build --release
-./target/release/hart</code></pre>
+            <pre class="code"><code>git clone https://github.com/theoi/hart.git
+cd hart && cargo build --release
+gh release download guest-v1 -R theoi/hart \
+  -p fw_jump.bin -p Image -D images
+target/release/hart --images images</code></pre>
             <p>
-              The guest images are built from pinned upstream sources by <code>guest/build.sh</code> and published
-              with checksums on the
-              <a href="https://github.com/theoi/hart/releases" target="_blank" rel="noopener">releases page</a>, together with
-              the corresponding source and license notices for the guest software.
+              <a href="https://github.com/theoi/hart/blob/main/guest/README.md" target="_blank" rel="noopener"><code>guest/build.sh</code></a>
+              builds the guest images from pinned upstream sources with no source patches. The
+              <a href="https://github.com/theoi/hart/releases/tag/guest-v1" target="_blank" rel="noopener">guest-v1 release</a>
+              has the images, their checksums, and the complete corresponding source and license notices
+              (<a href="https://github.com/theoi/hart/releases/download/guest-v1/legal-info.tar">legal-info.tar</a>).
             </p>
           </article>
         </section>
       </main>
 
       <footer class="footer">
-        <span>hart is dual-licensed MIT OR Apache-2.0.</span>
-        <a href="https://github.com/theoi/hart/releases" target="_blank" rel="noopener">Guest source and licenses</a>
+        <span>hart is dual-licensed MIT OR Apache-2.0. The terminal is <a href="https://github.com/xtermjs/xterm.js" target="_blank" rel="noopener">xterm.js</a> (MIT).</span>
+        <a href="https://github.com/theoi/hart/releases/tag/guest-v1" target="_blank" rel="noopener">Guest software: source and licenses</a>
       </footer>
     </div>
     <script type="module" src="./src/main.ts"></script>
