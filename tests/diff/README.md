@@ -11,6 +11,7 @@ and for the Linux boot.
 | `make_fixture.sh`, `fixtures/` | Spike commit logs that the self-test mutates. |
 | `csrprobe/` | CSR existence and WARL probe, plus the Spike CSR map it produces. |
 | `link.ld` | Linker script for bare-metal test programs (RAM at 0x80000000, HTIF `tohost`). |
+| `lockstep/` | Linux boot lockstep: the Spike configuration (`run_spike.sh`, `spike-sv39.dtb`) and a driver that compares both boots as they run (`lockstep.sh`). |
 
 ## Reference
 
@@ -76,3 +77,28 @@ entries and interleaved console text still match, and that each injected
 mutation (pc, instruction, privilege, x/f/CSR value, missing or extra register
 entry, load address, store address or data, dropped line, extra line) is
 reported at the mutated line.
+
+## Boot lockstep
+
+```sh
+SPIKE=/path/to/spike tests/diff/lockstep/lockstep.sh FW_JUMP_ELF IMAGE LIMIT [OUTDIR]
+```
+
+`FW_JUMP_ELF` is OpenSBI's `fw_jump.elf` and `IMAGE` the kernel `Image`, for
+example from the guest release that `tests/boot/boot_test.py` fetches. The
+driver builds hart (`cargo build --release`; set `HART` to use a prebuilt
+binary instead) and boots the guest on
+Spike (`run_spike.sh`: the reference flags above, 256 MiB, the device tree in
+`spike-sv39.dtb`) and on `hart --profile spike` with the same device tree. Both
+write their commit logs into named pipes that `compare.py --limit LIMIT` reads,
+so a full boot (about 350 million lines, hundreds of gigabytes as text) is
+compared without being stored; expect roughly 1 million lines per second.
+
+`OUTDIR` (default `target/lockstep`) receives `compare.txt` and both consoles.
+The driver prints the comparator's report and whether the consoles agree, and
+exits with the comparator's status. Set `COMPARE_ARGS="--keep-going N"` to list
+value-only mismatches and keep going until the first change of control flow.
+
+The dev guest prints its shell prompt about 350 million instructions after
+reset, so a `LIMIT` of 380000000 covers reset to the prompt. Neither side gets
+console input, so the guest then idles in its timer loop.
