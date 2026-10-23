@@ -113,3 +113,24 @@ fn missing_firmware_is_an_error() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no firmware"));
 }
+
+#[test]
+fn a_guest_that_hangs_past_the_end_of_ram_fails_loudly() {
+    // mtvec = a WFI loop, then a store to 0x8100_0000, the first byte past a 16 MiB RAM.
+    let code: [u32; 8] =
+        [0x0000_0297, 0x0182_8293, 0x3052_9073, 0x0810_0313, 0x0183_1313, 0x0003_3023, 0x1050_0073, 0xffdf_f06f];
+    let path = temp_path("hang.bin");
+    std::fs::write(&path, code.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+    let out = hart()
+        .arg("--bios")
+        .arg(&path)
+        .args(["-m", "16", "--timeout", "20"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&path);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("access fault at 0x81000000"), "{stderr}");
+    assert!(stderr.contains("past the end of RAM (16 MiB ends at 0x81000000)"), "{stderr}");
+}

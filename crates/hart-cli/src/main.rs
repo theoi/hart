@@ -5,7 +5,7 @@ mod script;
 mod term;
 
 use clap::Parser;
-use hart_core::board::{Board, BoardConfig, PowerState, TimeSource, DEFAULT_BOOTARGS};
+use hart_core::board::{Board, BoardConfig, DeadStop, PowerState, TimeSource, DEFAULT_BOOTARGS, RAM_BASE};
 use hart_core::loader;
 use hart_core::trace::SpikeCommitLog;
 use script::{Script, ScriptEvent, Watch};
@@ -55,7 +55,8 @@ struct Args {
     #[arg(long, value_name = "FILE")]
     dump_dtb: Option<PathBuf>,
 
-    /// RAM size in MiB [default: 256, or 2048 with --elf]
+    /// RAM size in MiB [default: 256, or 2048 with --elf]. The guest-v1 images need more than
+    /// 128: their fw_jump copies the device tree to 0x88000000
     #[arg(short = 'm', long, value_name = "MIB")]
     memory: Option<u64>,
 
@@ -314,6 +315,9 @@ impl Session<'_> {
                 PowerState::Exit(code) => return Some(Outcome::Message(1, format!("guest exited with code {code}"))),
                 PowerState::Reboot => return None,
             }
+            if let Some(stop) = board.dead_stop() {
+                return Some(Outcome::Message(1, dead_stop_message(stop, board.ram_end())));
+            }
 
             if let Some(deadline) = deadline {
                 if Instant::now() >= deadline {
@@ -339,6 +343,29 @@ impl Session<'_> {
                     Err(RecvTimeoutError::Disconnected) => *input_open = false,
                 }
             }
+        }
+    }
+}
+
+fn dead_stop_message(stop: DeadStop, ram_end: u64) -> String {
+    match stop {
+        DeadStop::Wfi { pc, access_fault } => {
+            let mut msg = format!("the guest hung: the hart waits at pc {pc:#x} with every interrupt disabled");
+            if let Some((addr, at)) = access_fault {
+                msg += &format!(" after an access fault at {addr:#x} (pc {at:#x})");
+                if addr >= ram_end {
+                    msg += &format!(
+                        ", past the end of RAM ({} MiB ends at {ram_end:#x}).\nhart: OpenSBI fw_jump copies \
+                         the device tree to a fixed address (0x88000000 in guest-v1), so RAM must extend past \
+                         it: guest-v1 needs more than 128 MiB (-m 256, the default, works)",
+                        (ram_end - RAM_BASE) >> 20
+                    );
+                }
+            }
+            msg
+        }
+        DeadStop::TrapLoop { pc } => {
+            format!("the guest hung: its machine-mode trap handler at {pc:#x} cannot be fetched")
         }
     }
 }

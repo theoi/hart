@@ -58,7 +58,7 @@ Some useful options (`hart --help` lists them all):
 | `--trace FILE` | Write a Spike `--log-commits` style commit log. |
 | `--elf FILE` | Run a bare-metal test ELF on the test profile; exit status 0 means pass. |
 | `--timebase insns:N` | Drive the timer from the instruction count, for deterministic runs. |
-| `-m MIB` | Set the RAM size (default 256 MiB). |
+| `-m MIB` | Set the RAM size (default 256 MiB). guest-v1 needs more than 128 MiB: its fw_jump copies the device tree to `0x88000000`. |
 
 ### Web demo
 

@@ -25,7 +25,7 @@ pub mod devicetree;
 pub mod spike;
 
 use crate::bus::{Bus, DeviceId};
-use crate::cpu::{Cpu, CpuConfig, StepResult};
+use crate::cpu::{Cpu, CpuConfig, Priv, StepResult};
 use crate::devices::clint::{Clint, CLINT_BASE, CLINT_SIZE};
 use crate::devices::htif::Htif;
 use crate::devices::plic::{Plic, PLIC_BASE, PLIC_SIZE};
@@ -137,6 +137,20 @@ pub enum PowerState {
     Exit(u64),
 }
 
+/// Why the hart can never run again, from [`Board::dead_stop`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeadStop {
+    /// Stalled in WFI at `pc` with every interrupt disabled in `mie`, so
+    /// nothing can wake it. Firmware hang loops end here, for example
+    /// OpenSBI's `_start_hang` after an early access fault. `access_fault`
+    /// is the last M-mode trap if it was an access fault: the faulting
+    /// address and the pc of the access.
+    Wfi { pc: u64, access_fault: Option<(u64, u64)> },
+    /// The M-mode trap vector at `pc` cannot be fetched, so every trap
+    /// traps again without retiring an instruction.
+    TrapLoop { pc: u64 },
+}
+
 /// Where boot images were placed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootLayout {
@@ -177,6 +191,7 @@ pub struct Board {
     instret: u64,
     dtb: Vec<u8>,
     layout: BootLayout,
+    ram_end: u64,
     /// Test profile: a WFI that nothing could ever wake (no enabled
     /// interrupt, no timer ahead) completes instead of stalling, as the spec
     /// allows.
@@ -293,6 +308,7 @@ impl Board {
             instret: 0,
             dtb,
             layout,
+            ram_end,
             resume_stuck_wfi: false,
         })
     }
@@ -326,6 +342,7 @@ impl Board {
             instret: 0,
             dtb: Vec::new(),
             layout,
+            ram_end: RAM_BASE + config.ram_size,
             resume_stuck_wfi: true,
         })
     }
@@ -377,6 +394,7 @@ impl Board {
                 dtb: (rom_dtb, rom_dtb + dtb.len() as u64),
                 fw_dynamic_info: 0,
             },
+            ram_end: RAM_BASE + config.ram_size,
             resume_stuck_wfi: false,
         })
     }
@@ -397,6 +415,26 @@ impl Board {
 
     pub fn layout(&self) -> BootLayout {
         self.layout
+    }
+
+    /// The first address past the end of RAM.
+    pub fn ram_end(&self) -> u64 {
+        self.ram_end
+    }
+
+    /// Whether the hart is stuck in a state it can never leave.
+    pub fn dead_stop(&self) -> Option<DeadStop> {
+        let c = &self.cpu.csr;
+        let pc = self.cpu.pc;
+        if self.cpu.waiting && c.mie == 0 {
+            // Instruction, load, and store access faults.
+            let access_fault = matches!(c.mcause, 1 | 5 | 7).then_some((c.mtval, c.mepc));
+            return Some(DeadStop::Wfi { pc, access_fault });
+        }
+        if self.cpu.mode == Priv::Machine && c.mcause == 1 && c.mepc == pc && c.mtvec & !3 == pc {
+            return Some(DeadStop::TrapLoop { pc });
+        }
+        None
     }
 
     /// Instructions retired since the board was built.
@@ -850,5 +888,57 @@ mod tests {
         board.bus.write(SYSCON_BASE, 4, 0x5555).unwrap();
         assert_eq!(board.power_state(), PowerState::PowerOff);
         assert_eq!(board.run(1000), 0, "a halted board does not run");
+    }
+
+    fn virt_board(code: &[u32]) -> Board {
+        let fw: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let config = BoardConfig { ram_size: 16 * MIB, ..BoardConfig::default() };
+        Board::new(config, &fw, None, None).unwrap()
+    }
+
+    /// mtvec = the WFI loop at +24, then a store to the first byte past a
+    /// 16 MiB RAM (0x8100_0000), the way fw_jump copies the device tree to
+    /// 0x8800_0000 with too little RAM.
+    const STORE_PAST_RAM_THEN_HANG: [u32; 8] = [
+        0x0000_0297, // auipc t0, 0
+        0x0182_8293, // addi t0, t0, 24
+        0x3052_9073, // csrw mtvec, t0
+        0x0810_0313, // li t1, 0x81
+        0x0183_1313, // slli t1, t1, 24
+        0x0003_3023, // sd zero, 0(t1)
+        0x1050_0073, // wfi
+        0xffdf_f06f, // j .-4
+    ];
+
+    #[test]
+    fn hang_after_an_access_fault_past_ram_is_a_dead_stop() {
+        let mut board = virt_board(&STORE_PAST_RAM_THEN_HANG);
+        assert_eq!(board.dead_stop(), None);
+        board.run(1000);
+        assert!(board.is_waiting());
+        assert_eq!(board.ram_end(), 0x8100_0000);
+        assert_eq!(
+            board.dead_stop(),
+            Some(DeadStop::Wfi { pc: board.cpu.pc, access_fault: Some((0x8100_0000, 0x8000_0014)) })
+        );
+        assert!((0x8000_0018..=0x8000_001c).contains(&board.cpu.pc), "{:#x}", board.cpu.pc);
+    }
+
+    #[test]
+    fn unfetchable_trap_vector_is_a_dead_stop() {
+        // mtvec stays 0 (unmapped), so the store fault traps to 0, whose
+        // fetch faults and traps to 0 again.
+        let mut board = virt_board(&STORE_PAST_RAM_THEN_HANG[3..6]);
+        board.run(1000);
+        assert_eq!(board.dead_stop(), Some(DeadStop::TrapLoop { pc: 0 }));
+    }
+
+    #[test]
+    fn wfi_with_an_enabled_interrupt_is_not_a_dead_stop() {
+        // mie = MSIE, then wfi: a software interrupt could still wake it.
+        let mut board = virt_board(&[0x0080_0293, 0x3042_9073, 0x1050_0073, 0xffdf_f06f]);
+        board.run(1000);
+        assert!(board.is_waiting());
+        assert_eq!(board.dead_stop(), None);
     }
 }
