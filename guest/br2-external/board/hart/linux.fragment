@@ -1,0 +1,119 @@
+# Trimmed for fast boot on a single-hart RV64GC board with CLINT, PLIC,
+# NS16550A UART and syscon power-off/reboot. Applied on top of the upstream
+# arch/riscv defconfig. guest/README.md explains each group.
+
+# EXPERT makes BLOCK, VT and similar options switchable. NONPORTABLE drops the
+# generic-distribution requirements (EFI stub) and allows declaring fast
+# unaligned access; this kernel only targets hart-like virt boards.
+CONFIG_EXPERT=y
+CONFIG_NONPORTABLE=y
+
+# Tracing, modules, debugging
+# CONFIG_MODULES is not set
+# CONFIG_FTRACE is not set
+# CONFIG_KPROBES is not set
+# CONFIG_PROFILING is not set
+# CONFIG_DEBUG_INFO is not set
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_DEBUG_FS is not set
+
+# Firmware interfaces and CPU features the board does not have
+# CONFIG_EFI is not set
+# CONFIG_ACPI is not set
+# CONFIG_COMPAT is not set
+# CONFIG_RISCV_ISA_V is not set
+# CONFIG_KVM is not set
+# CONFIG_VIRTUALIZATION is not set
+# hart handles misaligned loads and stores in hardware, so skip the boot-time
+# timing probe (check_unaligned_access_all_cpus) and declare them efficient.
+CONFIG_RISCV_EFFICIENT_UNALIGNED_ACCESS=y
+
+# SoC platforms other than the generic virt-style board
+# CONFIG_ARCH_ANDES is not set
+# CONFIG_ARCH_MICROCHIP is not set
+# CONFIG_ARCH_MICROCHIP_POLARFIRE is not set
+# CONFIG_ARCH_SIFIVE is not set
+# CONFIG_ARCH_SOPHGO is not set
+# CONFIG_ARCH_SPACEMIT is not set
+# CONFIG_ARCH_STARFIVE is not set
+# CONFIG_SOC_STARFIVE is not set
+# CONFIG_ARCH_SUNXI is not set
+# CONFIG_ARCH_THEAD is not set
+# CONFIG_ARCH_CANAAN is not set
+CONFIG_ARCH_VIRT=y
+CONFIG_NR_CPUS=2
+
+# Power management
+# CONFIG_SUSPEND is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_CPU_IDLE is not set
+# CONFIG_CPU_FREQ is not set
+
+# Subsystems with no device on the board
+# CONFIG_NET is not set
+# CONFIG_PCI is not set
+# CONFIG_BLOCK is not set
+# CONFIG_USB_SUPPORT is not set
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+# CONFIG_VT is not set
+# CONFIG_SOUND is not set
+# CONFIG_MMC is not set
+# CONFIG_MTD is not set
+# CONFIG_INPUT_KEYBOARD is not set
+# CONFIG_INPUT_MOUSE is not set
+# CONFIG_SERIO is not set
+# CONFIG_HID_SUPPORT is not set
+# CONFIG_VIRTIO_MENU is not set
+# CONFIG_HW_RANDOM is not set
+# CONFIG_I2C is not set
+# CONFIG_SPI is not set
+# CONFIG_THERMAL is not set
+# CONFIG_WATCHDOG is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_IIO is not set
+# CONFIG_PWM is not set
+# CONFIG_DMADEVICES is not set
+# CONFIG_MAILBOX is not set
+# CONFIG_IOMMU_SUPPORT is not set
+# CONFIG_SERIAL_8250_DW is not set
+# CONFIG_SERIAL_SIFIVE is not set
+# CONFIG_LEGACY_PTYS is not set
+
+# Nothing on the guest uses the crypto API. Its jitter-entropy RNG self-test
+# (jent_mod_init) alone costs about 126M instructions at boot.
+# CONFIG_CRYPTO is not set
+# CONFIG_CRYPTO_JITTERENTROPY is not set
+# CONFIG_CRYPTO_DRBG_MENU is not set
+# CONFIG_CRYPTO_SEQIV is not set
+# CONFIG_CRYPTO_ECHAINIV is not set
+# CONFIG_CRYPTO_GCM is not set
+# CONFIG_INPUT is not set
+# CONFIG_RTC_CLASS is not set
+
+# Containers, security modules, and BPF
+# CONFIG_CGROUPS is not set
+# CONFIG_NAMESPACES is not set
+# CONFIG_BPF_SYSCALL is not set
+# CONFIG_SECURITY is not set
+# CONFIG_SECURITYFS is not set
+# CONFIG_AUDIT is not set
+# CONFIG_KEYS is not set
+# CONFIG_SWAP is not set
+
+# What the board and the initramfs need
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_OF_PLATFORM=y
+CONFIG_SERIAL_EARLYCON_RISCV_SBI=y
+CONFIG_POWER_RESET=y
+CONFIG_POWER_RESET_SYSCON=y
+CONFIG_POWER_RESET_SYSCON_POWEROFF=y
+CONFIG_TMPFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_BLK_DEV_INITRD=y
+# The initramfs is small; skipping decompression saves boot instructions.
+# INITRAMFS_SOURCE is the value Buildroot sets later; it is repeated here so the
+# compression choice is visible when this fragment is merged.
+CONFIG_INITRAMFS_SOURCE="${BR_BINARIES_DIR}/rootfs.cpio"
+CONFIG_INITRAMFS_COMPRESSION_NONE=y

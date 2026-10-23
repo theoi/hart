@@ -1,0 +1,2 @@
+# awk needs libm for atan2() and friends.
+CONFIG_FEATURE_AWK_LIBM=y

@@ -1,0 +1,5 @@
+config BR2_PACKAGE_HART_DEMOS
+	bool "hart-demos"
+	help
+	  Demo programs for the hart guest: an ASCII Mandelbrot renderer
+	  computed in double precision (/usr/bin/mandelbrot).
