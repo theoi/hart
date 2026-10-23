@@ -88,7 +88,7 @@ generated sets on every run.
 ## Configuration review map
 
 Upstream differences: `diff -ru $ACT4_HOME/riscv-arch-test/config/sail/sail-RVA20S64 tests/act4/config/hart-rv64gc`.
-"IC" is `docs/implementation-choices.md`; line numbers are at commit 63cf8d5. Values not
+"IC" is `docs/implementation-choices.md`; line numbers are at commit 8272f46. Values not
 listed are unchanged from sail-RVA20S64 and either match hart (shown) or do not apply to an
 extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, and so on, all disabled). Sdtrig is
 disabled too; hart's zero-trigger Sdtrig CSRs are covered under the limits below.
@@ -121,7 +121,7 @@ disabled too; hart's zero-trigger Sdtrig CSRs are covered under the limits below
 | `HW_MSTATUS_FS_DIRTY_UPDATE` precise; `MSTATUS_FS_LEGAL_VALUES` [0,1,2,3]; `MSTATUS_VS_LEGAL_VALUES` [0] | | IC L35, L123 |
 | `UXLEN`, `SXLEN` | [64] | IC L33 |
 | `*_ENDIANNESS` | little | IC L36 |
-| `MEI/MSI/MTI/SEI/SSI/STI_INTR_IMPL` | true | IC L42 (all six `mie` bits writable), L31 |
+| `MEI/MSI/MTI/SEI/SSI/STI_INTR_IMPL` | true | IC L42 (all six `mie` bits writable), L43 |
 | `ASID_WIDTH` | 16 | IC L90 |
 | `SATP_MODE_BARE` | true | IC L89 |
 | `MTVEC_MODES`, `STVEC_MODES` [0,1]; base alignment 4 | | IC L37 |

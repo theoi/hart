@@ -131,6 +131,8 @@ To rerun the checks:
 
 ```sh
 tests/riscv-tests/build.sh && tests/riscv-tests/run.sh rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64mi rv64si
+tests/act4/setup.sh && python3 tests/act4/act4.py generate --fast
+cargo build --release && python3 tests/act4/act4.py --out act4-results all
 tests/testfloat/build.sh && tests/testfloat/run.sh          # level 1; see tests/testfloat/README.md for level 2
 tests/boot/boot_test.py                                     # native boot and command script
 ```
@@ -138,7 +140,10 @@ tests/boot/boot_test.py                                     # native boot and co
 The riscv-tests build needs `riscv64-unknown-elf-gcc` (on Ubuntu, `apt install
 gcc-riscv64-unknown-elf`) and `autoconf`. The Spike and browser instructions are in
 [`tests/diff`](tests/diff/README.md) and [`tests/web`](tests/web/README.md).
-<!-- RESULT: add the ACT4 rerun command when tests/act4 lands -->
+The ACT4 commands need Linux x86_64 and about 8 GB of disk. `setup.sh` installs the pinned
+compiler, Sail model, and ACT4 checkout into `~/.cache/hart-act4` (about 2 minutes),
+generating the tests takes about 5 minutes, and `all` runs them on Sail and on hart and
+writes the per-test results to `act4-results/`; see [`tests/act4`](tests/act4/README.md).
 
 ## Guest software
 
