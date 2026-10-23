@@ -33,7 +33,7 @@ use crate::devices::sig::{InterruptTrigger, SIG_BASE, SIG_SIZE};
 use crate::devices::syscon::{Syscon, SYSCON_BASE, SYSCON_SIZE};
 use crate::devices::uart::{Uart, UART_BASE, UART_IRQ, UART_SIZE};
 use crate::fdt::{Fdt, FdtError};
-use crate::irq::Halt;
+use crate::irq::{bits, Halt};
 use crate::loader::{self, LoadError};
 use devicetree::{DeviceTreeConfig, TIMEBASE_HZ};
 use spike::{
@@ -534,7 +534,12 @@ impl Board {
             self.advance_host_time();
         }
         while steps_done < max && self.bus.wires.halt.is_none() {
-            let n = (max - steps_done).min(BATCH);
+            let mut n = (max - steps_done).min(BATCH);
+            if let TimeSource::Instructions { insns_per_tick } = self.time {
+                // End the batch at the next tick, so `time` and `mtime` reads inside it
+                // see every tick.
+                n = n.min(insns_per_tick - self.insn_carry);
+            }
             let retired = self.cpu.run(&mut self.bus, n);
             self.instret += retired;
             let waiting = self.cpu.waiting;
@@ -599,10 +604,10 @@ impl Board {
         steps.max(1)
     }
 
-    /// With instruction time, jumps `mtime` to the next timer interrupt.
-    /// Returns false when nothing can wake the hart without host action.
+    /// With instruction time, jumps `mtime` to the next timer interrupt if `mie`
+    /// enables it. Returns false when nothing can wake the hart without host action.
     fn skip_idle_time(&mut self) -> bool {
-        if !matches!(self.time, TimeSource::Instructions { .. }) {
+        if !matches!(self.time, TimeSource::Instructions { .. }) || self.cpu.csr.mie & bits::MTIP == 0 {
             return false;
         }
         let mtime = self.bus.wires.mtime;
@@ -959,5 +964,52 @@ mod tests {
         assert_eq!(board.cpu.x[10], 0x4025_7302_0285_9300);
         assert_eq!((board.cpu.csr.mcause, board.cpu.csr.mtval, board.cpu.csr.mepc), (7, 0x1003, RAM_BASE + 0x14));
         assert_eq!(board.bus.read(CLINT_BASE + 4, 8), Err(crate::bus::BusFault), "devices still need alignment");
+    }
+
+    /// csrr s0, time; 2000 iterations of addi/bnez; csrr s1, time; j .
+    const TIME_AROUND_A_LOOP: [u32; 6] = [0xc010_2473, 0x7d00_0293, 0xfff2_8293, 0xfe02_9ee3, 0xc010_24f3, 0x0000_006f];
+
+    #[test]
+    fn time_advances_inside_what_used_to_be_one_batch() {
+        for (insns_per_tick, ticks) in [(1, 4002), (100, 40)] {
+            let fw: Vec<u8> = TIME_AROUND_A_LOOP.iter().flat_map(|w| w.to_le_bytes()).collect();
+            let time = TimeSource::Instructions { insns_per_tick };
+            let config = BoardConfig { ram_size: 16 * MIB, time, ..BoardConfig::default() };
+            let mut board = Board::new(config, &fw, None, None).unwrap();
+            board.run(5000);
+            assert_eq!(board.cpu.x[9] - board.cpu.x[8], ticks, "insns:{insns_per_tick}");
+        }
+    }
+
+    /// mtimecmp = 2^64-1, mie = 0, mstatus.MIE = 0; s0 = mtime; wfi; s1 = mtime; j .
+    const WFI_NOTHING_CAN_WAKE: [u32; 10] = [
+        0x0200_42b7, // lui t0, 0x2004 (mtimecmp)
+        0xfff0_0313, // li t1, -1
+        0x0062_b023, // sd t1, 0(t0)
+        0x3040_1073, // csrw mie, zero
+        0x3004_7073, // csrci mstatus, 8
+        0x0200_c3b7, // lui t2, 0x200c
+        0xff83_b403, // ld s0, -8(t2) (mtime)
+        0x1050_0073, // wfi
+        0xff83_b483, // ld s1, -8(t2)
+        0x0000_006f, // j .
+    ];
+
+    #[test]
+    fn test_profile_wfi_that_nothing_can_wake_completes_without_a_time_jump() {
+        let mut board = Board::new_test(BoardConfig::default(), &test_elf(&WFI_NOTHING_CAN_WAKE)).unwrap();
+        board.run(1000);
+        assert_eq!(board.cpu.pc, RAM_BASE + 36, "the WFI retired");
+        let elapsed = board.cpu.x[9].wrapping_sub(board.cpu.x[8]);
+        assert!(elapsed < 100, "mtime jumped by {elapsed:#x}");
+        assert_eq!(board.dead_stop(), None);
+    }
+
+    #[test]
+    fn virt_wfi_never_skips_to_a_disabled_timer() {
+        let mut board = virt_board(&WFI_NOTHING_CAN_WAKE);
+        board.run(1000);
+        assert!(board.mtime() < 100, "mtime jumped to {:#x}", board.mtime());
+        assert!(matches!(board.dead_stop(), Some(DeadStop::Wfi { .. })));
     }
 }
