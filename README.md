@@ -5,7 +5,7 @@ machine on a virt-style board and boots unmodified upstream software: OpenSBI fi
 Linux LTS kernel, and a BusyBox shell. It runs natively in a terminal, and in a browser tab
 through WebAssembly.
 
-**Live demo:** <https://theoi.github.io/hart/> <!-- RESULT: confirm the live demo URL once GitHub Pages is enabled -->
+**Live demo:** <https://theoi.github.io/hart/> boots Linux to a shell in your browser.
 
 ## Features
 
@@ -115,17 +115,18 @@ same board API.
 ## How hart was validated
 
 The results below come from the final evaluation of commit
-<!-- RESULT: evaluated commit SHA -->. Each check can be rerun from this repository.
+[`3f756f9`](https://github.com/theoi/hart/commit/3f756f95472f84ca4e0139f4c1b71f415181ce2e).
+Each check can be rerun from this repository.
 
 | Check | What it shows | Result |
 | --- | --- | --- |
-| [riscv-tests](https://github.com/riscv-software-src/riscv-tests) | Every rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64mi, and rv64si `-p` test at commit `3df703c` passes. | <!-- RESULT: tests passed / total --> |
-| [RISC-V Architectural Tests (ACT4)](https://github.com/riscv-non-isa/riscv-arch-test) | Every test generated for hart's configuration passes. Expected results come from the Sail RISC-V model v0.16. | <!-- RESULT: ACT4 commit; tests passed / generated; excluded groups and reasons --> |
-| Differential testing against [Spike](https://github.com/riscv-software-src/riscv-isa-sim) | hart and Spike (commit `2c300cd`) produce the same per-instruction commit log for randomized programs and for the Linux boot. | <!-- RESULT: programs and instructions compared; boot comparison scope and instruction count; divergences --> |
-| [Berkeley TestFloat](http://www.jhauser.us/arithmetic/TestFloat.html) | The soft-float library matches TestFloat bit for bit, including the exception flags, in all five rounding modes. | <!-- RESULT: vectors per level; mismatches --> |
-| Native boot | From a clean checkout with the published images, hart boots to the shell and the command script produces the expected output. | <!-- RESULT: pass/fail; boot time --> |
-| Browser boot | Headless Chromium boots to the shell prompt and runs the command script; Firefox runs the same functional test. | <!-- RESULT: Chromium median boot time over N runs; Firefox result --> |
-| Independent review | A reviewer who did not build or validate hart checked the deliverables against the project's requirements. | <!-- RESULT: review outcome --> |
+| [riscv-tests](https://github.com/riscv-software-src/riscv-tests) | Every rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64mi, and rv64si `-p` test at commit `3df703c` passes. | 134 of 134 tests pass. |
+| [RISC-V Architectural Tests (ACT4)](https://github.com/riscv-non-isa/riscv-arch-test) | Every test generated for hart's configuration passes. Expected results come from the Sail RISC-V model v0.16. | At `act4` commit `46339ac`, all 592 tests generated for hart's configuration pass, including 32 interrupt and 26 exception tests. All 592 also pass on Sail itself. 39 Sv48 tests are excluded because hart implements Sv39 only. |
+| Differential testing against [Spike](https://github.com/riscv-software-src/riscv-isa-sim): randomized programs | hart and Spike (commit `2c300cd`) produce the same per-instruction commit log for randomized bare-metal programs. | The commit logs match for 2,000 freshly generated randomized programs (integer, FP, CSR, traps, Sv39, M/S/U modes, and interrupts), with no CSR excluded from the comparison. |
+| Differential testing against Spike: Linux boot | hart and Spike run the guest-v1 boot in lockstep and compare every instruction. | 150,000,000 instructions from reset match, instruction by instruction, through the shell prompt (reached at about 60.8 million instructions). |
+| [Berkeley TestFloat](http://www.jhauser.us/arithmetic/TestFloat.html) | The soft-float library matches TestFloat (RISC-V specialization) bit for bit, including the exception flags, in all five rounding modes. | 33,204,430,160 vectors, 0 mismatches in results or flags: level 1 for all 42 functions in all 5 rounding modes; full level 2 for add, sub, mul, div, and sqrt (f32 and f64); and fused multiply-add (all four forms, f32 and f64) on the first 2×10⁹ level-2 vectors in RNE and the first 5×10⁸ in each other mode. |
+| Native boot | From a clean checkout with the published images, `tests/boot/boot_test.py` boots hart to the shell and checks the command script's output. | Passes: the prompt appears in 0.42 s under a pseudo-terminal, and the uname, cpuinfo, atan2, and mandelbrot outputs all match. |
+| Browser boot | Headless Chromium boots to the shell prompt and runs the command script; Firefox runs the same functional test. | Chromium reaches the prompt in a median of 1.15 s over 5 runs (4-vCPU machine, site served locally), and the full command script passes. Firefox passes too (1.70 s). |
 
 To rerun the checks:
 
