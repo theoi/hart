@@ -11,6 +11,7 @@ and for the Linux boot.
 | `make_fixture.sh`, `fixtures/` | Spike commit logs that the self-test mutates. |
 | `csrprobe/` | CSR existence and WARL probe, plus the Spike CSR map it produces. |
 | `link.ld` | Linker script for bare-metal test programs (RAM at 0x80000000, HTIF `tohost`). |
+| `gen/rvgen.py`, `run_seeds.sh` | Random RV64GC program generator and the driver that runs its programs on Spike and hart and compares the logs (check `spike-diff-random`). |
 | `lockstep/` | Linux boot lockstep: the Spike configuration (`run_spike.sh`, `spike-sv39.dtb`) and a driver that compares both boots as they run (`lockstep.sh`). |
 
 ## Reference
@@ -77,6 +78,40 @@ entries and interleaved console text still match, and that each injected
 mutation (pc, instruction, privilege, x/f/CSR value, missing or extra register
 entry, load address, store address or data, dropped line, extra line) is
 reported at the mutated line.
+
+## Random programs
+
+```sh
+SPIKE=/path/to/spike tests/diff/run_seeds.sh FIRST LAST OUTDIR --hart target/release/hart --jobs 4
+```
+
+`gen/rvgen.py SEED` writes one assembly program; the same seed always gives the
+same program. Each seed picks a profile: the mode the body runs in (M, S, or
+U), bare or Sv39 translation (4 KiB pages with random permission, A and D bits,
+a 2 MiB megapage that is sometimes misaligned, and a U-mode alias of the code),
+trap delegation, `mstatus` bits (FS, SUM, MXR, TVM, TW, TSR), counter enables,
+and whether interrupts are used. The body is 300 to 900 random items: integer,
+M, A (including LR/SC pairs and misaligned AMOs), F and D with every rounding
+mode and special values, compressed and hint encodings, aligned and misaligned
+loads and stores, CSR accesses (including inaccessible and nonexistent CSRs),
+ecall, ebreak, illegal and reserved encodings, `mret`/`sret`/`wfi`/`sfence.vma`
+in every mode, and software and timer interrupts through `mip`, `sip`, and the
+CLINT.
+
+Every program terminates: control flow only moves forward, each instruction
+that may trap is preceded by `la x31, <next>`, and the M- and S-mode handlers
+resume at `x31`. Stores always use the data-region base registers, so programs
+never modify their own code or page tables. The program ends with `ecall` while
+`x31` is 0, and the M-mode handler writes 1 to `tohost`.
+
+`run_seeds.sh` builds each program with `riscv64-unknown-elf-gcc` (`CC`), runs it
+on Spike with the reference flags plus `-m256 --dtb=lockstep/spike-sv39.dtb`, and
+with `--hart` on `hart --profile spike` with the same device tree, so both see
+the same reset ROM, CLINT, PLIC, and UART. It compares the logs with
+`compare.py --end-store tohost`. `OUTDIR/summary.txt` has one line per seed
+(`SEED spike=RC lines=N hart=RC cmp=RC`), and `OUTDIR/elf.sha256` the hashes of
+the programs. Logs are kept for failing seeds (all seeds with `--keep`). The
+exit status is 0 only if every seed passed.
 
 ## Boot lockstep
 
