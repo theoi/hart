@@ -1,0 +1,20 @@
+{
+  "name": "hart-web-tests",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:timing": "playwright test --project=chromium-timing",
+    "test:functional": "playwright test --project=chromium --project=firefox",
+    "test:chromium": "playwright test --project=chromium",
+    "test:firefox": "playwright test --project=firefox",
+    "screenshots": "playwright test --project=screenshots-chromium --project=screenshots-firefox",
+    "serve": "node serve.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

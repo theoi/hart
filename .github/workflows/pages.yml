@@ -1,0 +1,84 @@
+name: Pages
+
+# Builds the WebAssembly demo with the published guest images and deploys it to GitHub
+# Pages. Manual only: Pages must first be enabled for the repository with source
+# "GitHub Actions", and every run costs Actions minutes.
+on:
+  workflow_dispatch:
+    inputs:
+      guest:
+        description: Guest release tag whose fw_jump.bin and Image the site bundles
+        required: true
+        default: guest-v1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: |
+          curl -sSfL https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/wasm-pack-v0.15.0-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install site dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build WebAssembly
+        working-directory: web
+        run: npm run wasm
+
+      # Release-asset URLs do not allow cross-origin fetches, so the images are served
+      # from the site itself.
+      - name: Fetch guest images
+        working-directory: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUEST: ${{ inputs.guest }}
+        run: npm run images -- --release "$GUEST"
+
+      - name: Build site
+        working-directory: web
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

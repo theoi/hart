@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hart · a RISC-V RV64GC computer, written from scratch</title>
+    <meta
+      name="description"
+      content="hart is a RISC-V RV64GC emulator written from scratch in Rust. It boots unmodified OpenSBI, Linux, and a BusyBox shell right here in your browser."
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0a0c10" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f131a'/%3E%3Cpath d='M9 8v16M9 16h9a5 5 0 0 1 5 5v3' stroke='%23f5b53f' stroke-width='3.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <div class="brand">
+          <a class="wordmark" href="./">hart</a>
+          <span class="brand-sep" aria-hidden="true">·</span>
+          <p class="tagline">a RISC-V RV64GC computer, written from scratch</p>
+        </div>
+        <a class="source-link" href="https://github.com/theoi/hart" target="_blank" rel="noopener">
+          Source <span aria-hidden="true">↗</span>
+        </a>
+      </header>
+
+      <main>
+        <section class="console" aria-label="Emulated Linux console">
+          <div class="term-frame" id="term-frame">
+            <div class="term-progress" id="term-progress" role="progressbar" aria-label="Downloading guest images" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="term-progress-bar" id="term-progress-bar"></div>
+            </div>
+            <div class="term" id="terminal"></div>
+          </div>
+
+          <div class="status-bar">
+            <p class="status" id="status" aria-live="polite">
+              <span class="status-state"><span class="dot" id="st-dot" data-state="loading"></span><span id="st-state">loading</span></span>
+              <span class="status-item" id="st-speed"></span>
+              <span class="status-item" id="st-boot"></span>
+              <span class="status-item" id="st-up"></span>
+            </p>
+            <button class="button" id="restart" type="button" title="Reset the machine and boot again">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Restart
+            </button>
+          </div>
+        </section>
+
+        <section class="about" aria-label="About hart">
+          <article class="about-col">
+            <h2>How it works</h2>
+            <p>
+              hart emulates a single-core 64-bit RISC-V computer. The CPU, Sv39 MMU, PMP, a soft-float FPU, and the
+              CLINT, PLIC, 16550 UART, and power-off devices are all written from scratch in Rust, then compiled to
+              WebAssembly.
+            </p>
+            <p>
+              It runs in a Web Worker in this tab and boots unmodified upstream guest software: OpenSBI firmware, a
+              Linux LTS kernel, and a BusyBox shell. Nothing is sent to a server.
+            </p>
+            <p class="try">
+              Try
+              <button class="chip" type="button" data-cmd="uname -a">uname -a</button>
+              <button class="chip" type="button" data-cmd="cat /proc/cpuinfo">cat /proc/cpuinfo</button>
+              <button class="chip" type="button" data-cmd="mandelbrot">mandelbrot</button>
+            </p>
+          </article>
+
+          <article class="about-col">
+            <h2>How it was validated</h2>
+            <ul class="checks">
+              <li><strong>riscv-tests</strong>: every rv64 ui, um, ua, uc, uf, ud, mi, and si test passes.</li>
+              <li><strong>riscv-arch-test</strong> (ACT4): expected results from the Sail reference model, interrupts included.</li>
+              <li><strong>Berkeley TestFloat</strong>: the FPU is bit-exact in every rounding mode, with exact flags.</li>
+              <li><strong>Spike</strong>: instruction-by-instruction commit logs match the reference simulator, for random programs and the Linux boot.</li>
+              <li><strong>Browser tests</strong>: Playwright boots this page in Chromium and Firefox and checks a command script.</li>
+            </ul>
+          </article>
+
+          <article class="about-col">
+            <h2>Build it yourself</h2>
+            <pre class="code"><code>git clone https://github.com/theoi/hart
+cd hart
+cargo build --release
+./target/release/hart</code></pre>
+            <p>
+              The guest images are built from pinned upstream sources by <code>guest/build.sh</code> and published
+              with checksums on the
+              <a href="https://github.com/theoi/hart/releases" target="_blank" rel="noopener">releases page</a>, together with
+              the corresponding source and license notices for the guest software.
+            </p>
+          </article>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>hart is dual-licensed MIT OR Apache-2.0.</span>
+        <a href="https://github.com/theoi/hart/releases" target="_blank" rel="noopener">Guest source and licenses</a>
+      </footer>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

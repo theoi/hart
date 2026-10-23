@@ -10,6 +10,14 @@ rust-version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Replaces the emulator with a scripted machine that replays a boot log and runs a toy
+# shell. Used to develop and test the web front end without a guest.
+stub = []
+
 [dependencies]
 hart-core = { path = "../hart-core" }
 wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3"]
