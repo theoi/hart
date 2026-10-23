@@ -48,6 +48,10 @@ fi
 # Buildroot release date instead.
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(sed -n 's/^BR2_VERSION_EPOCH = //p' "$src/Makefile")}
 export SOURCE_DATE_EPOCH
+# Likewise Buildroot's version string (built into the compiler, and from there
+# into every binary and the kernel banner) gains "-g<commit>" of an enclosing
+# checkout. Keep Git from looking above the output directory.
+export GIT_CEILING_DIRECTORIES=$out
 
 # Fails if the final configuration lacks an option a fragment sets, for example
 # because Kconfig dropped it for a missing dependency. An option the fragment

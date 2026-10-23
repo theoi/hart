@@ -45,9 +45,11 @@ it copies the outputs to `OUTPUT_DIR/images` and writes `SHA256SUMS`.
 The build is reproducible: `BR2_REPRODUCIBLE` fixes timestamps, build paths, user
 and host names, so two builds of the same commit produce the same `SHA256SUMS`.
 Timestamps, including the kernel build date shown by `uname -a`, come from the
-Buildroot release date: the script sets `SOURCE_DATE_EPOCH` to it, because
-Buildroot would otherwise use the date of the last commit of whatever Git
-checkout contains its source tree.
+Buildroot release date. The script sets `SOURCE_DATE_EPOCH` to it and sets
+`GIT_CEILING_DIRECTORIES` to the output directory: otherwise, when the output
+directory is inside a Git checkout (as `guest/out` is), Buildroot takes the
+date of that checkout's last commit and appends its commit hash to the
+Buildroot version string, which ends up in the compiler and every binary.
 
 ## Versions
 
