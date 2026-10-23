@@ -177,6 +177,17 @@ impl CsrFile {
         }
     }
 
+    /// Count `n` retired instructions at once.
+    #[inline]
+    pub fn add_retired(&mut self, n: u64) {
+        if self.mcountinhibit & 1 == 0 {
+            self.mcycle = self.mcycle.wrapping_add(n);
+        }
+        if self.mcountinhibit & 4 == 0 {
+            self.minstret = self.minstret.wrapping_add(n);
+        }
+    }
+
     #[inline]
     pub fn satp_mode(&self) -> u64 {
         self.satp >> 60

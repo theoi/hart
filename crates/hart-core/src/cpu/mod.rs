@@ -131,7 +131,7 @@ impl Cpu {
         self.x[r as usize & 31]
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn set_x(&mut self, rd: u32, value: u64) {
         if rd != 0 {
             self.x[rd as usize & 31] = value;
@@ -291,18 +291,106 @@ impl Cpu {
 
     // ---- execution ----
 
-    /// Execute up to `max` instructions. Stops early when the hart enters WFI with nothing
-    /// pending. Returns the number of instructions retired.
+    /// Execute up to `max` steps (instructions or traps). Stops early when the hart is in
+    /// WFI with nothing pending. Returns the number of instructions retired.
+    ///
+    /// In the normal profile, interrupts are polled on entry and then only where
+    /// interrupt state can change: after Zicsr instructions, MRET, SRET, WFI, traps, and
+    /// accesses that leave the TLB fast path (which includes every device access).
+    /// Device lines change only during device accesses or between calls to `run`, so
+    /// this is exact.
     pub fn run(&mut self, bus: &mut Bus, max: u64) -> u64 {
+        mmu::update_ctx(self);
+        self.wfi_retired = false;
+        if !self.config.lockstep_irq && self.tracer.is_none() {
+            return self.run_fast(bus, max);
+        }
+        if !self.config.lockstep_irq {
+            self.irq_poll = true;
+        }
         let mut retired = 0;
-        let mut steps = 0;
-        while steps < max {
-            steps += 1;
-            match self.step(bus) {
+        for _ in 0..max {
+            match self.step_impl(bus, false) {
                 StepResult::Retired => retired += 1,
                 StepResult::Trapped(_) => {}
                 StepResult::Waiting => break,
             }
+        }
+        retired
+    }
+
+    /// The normal-profile run loop without tracing. Executes straight-line code in an
+    /// inner loop that reuses the current fetch page's translation and batches the
+    /// counter updates; it returns to the outer loop (which polls interrupts) after
+    /// serializing instructions, SFENCE.VMA, traps, and device accesses.
+    fn run_fast(&mut self, bus: &mut Bus, max: u64) -> u64 {
+        self.irq_poll = true;
+        let mut steps = 0u64;
+        let mut retired = 0u64;
+        while steps < max {
+            if self.irq_poll {
+                self.irq_poll = false;
+                if self.poll_interrupts(bus).is_some() {
+                    steps += 1;
+                    continue;
+                }
+            }
+            if self.waiting {
+                break;
+            }
+            let mut cur_tag = u64::MAX;
+            let mut cur_off = 0u64;
+            let mut pending = 0u64;
+            while steps < max {
+                steps += 1;
+                let pc = self.pc;
+                let tag = (pc >> 12) | self.mmu.fetch_ctx;
+                let cached = if tag == cur_tag {
+                    let off = (cur_off + (pc & 0xfff)) as usize;
+                    match bus.ram.cached_code(off) {
+                        Some(slot) => Some((slot.insn, slot.raw)),
+                        None => exec::fill_code(bus, pc, off),
+                    }
+                } else {
+                    None
+                };
+                let (insn, raw) = match cached {
+                    Some(x) => x,
+                    None => match exec::fetch_decoded(self, bus) {
+                        Ok(x) => {
+                            if let Some(off) = self.mmu.lookup(pc, Access::Fetch) {
+                                cur_tag = tag;
+                                cur_off = off;
+                            }
+                            x
+                        }
+                        Err(e) => {
+                            self.trap_exception(e, pc);
+                            break;
+                        }
+                    },
+                };
+                if insn.op.is_serializing() {
+                    self.csr.add_retired(pending);
+                    retired += pending;
+                    pending = 0;
+                    if let StepResult::Retired = self.step_serializing(bus, insn, raw) {
+                        retired += 1;
+                    }
+                    break;
+                }
+                if let Err(e) = exec::execute(self, bus, insn, raw) {
+                    self.trap_exception(e, pc);
+                    break;
+                }
+                pending += 1;
+                // A device access or SFENCE.VMA: re-poll and re-translate.
+                if self.irq_poll || insn.op == decode::Op::SfenceVma {
+                    break;
+                }
+            }
+            self.csr.add_retired(pending);
+            retired += pending;
         }
         retired
     }
@@ -321,11 +409,19 @@ impl Cpu {
         Some(trap)
     }
 
-    /// Take a pending interrupt or execute one instruction.
+    /// Take a pending interrupt or execute one instruction. In the normal profile this
+    /// always polls interrupts first; in the lockstep profile it polls only when
+    /// `irq_poll` is set.
     pub fn step(&mut self, bus: &mut Bus) -> StepResult {
+        mmu::update_ctx(self);
+        let always = !self.config.lockstep_irq;
+        self.step_impl(bus, always)
+    }
+
+    #[inline(always)]
+    fn step_impl(&mut self, bus: &mut Bus, always_poll: bool) -> StepResult {
         self.wfi_retired = false;
-        let lockstep = self.config.lockstep_irq;
-        if !lockstep || self.irq_poll {
+        if always_poll || self.irq_poll {
             self.irq_poll = false;
             if let Some(trap) = self.poll_interrupts(bus) {
                 return StepResult::Trapped(trap);
@@ -335,53 +431,82 @@ impl Cpu {
             return StepResult::Waiting;
         }
         let pc = self.pc;
-        let mode = self.mode;
+        let (insn, raw) = match exec::fetch_decoded(self, bus) {
+            Ok(x) => x,
+            Err(e) => return self.trap_exception(e, pc),
+        };
+        if insn.op.is_serializing() {
+            return self.step_serializing(bus, insn, raw);
+        }
         if self.tracing() {
             self.commit.clear();
         }
-        let result = exec::fetch_decoded(self, bus).and_then(|(insn, raw)| {
-            // Spike serializes before every Zicsr instruction, which polls interrupts.
-            if lockstep && insn.op.is_csr() {
-                if let Some(trap) = self.poll_interrupts(bus) {
-                    return Ok(Err(trap));
-                }
-            }
-            exec::execute(self, bus, insn, raw)?;
-            match insn.op {
-                decode::Op::Wfi => self.wfi_retired = true,
-                decode::Op::Mret | decode::Op::Sret => self.irq_poll = true,
-                op if op.is_csr() => self.irq_poll = true,
-                _ => {}
-            }
-            Ok(Ok(raw))
-        });
-        let result = match result {
-            Ok(Err(trap)) => return StepResult::Trapped(trap),
-            Ok(Ok(raw)) => Ok(raw),
-            Err(e) => Err(e),
-        };
-        match result {
-            Ok(insn) => {
-                self.csr.retire();
-                if self.tracing() {
-                    self.commit.mode = mode as u8;
-                    self.commit.pc = pc;
-                    self.commit.insn = insn;
-                    self.commit.len = if insn & 3 == 3 { 4 } else { 2 };
-                    let commit = core::mem::take(&mut self.commit);
-                    if let Some(t) = self.tracer.as_mut() {
-                        t.commit(&commit);
-                    }
-                    self.commit = commit;
-                }
-                StepResult::Retired
-            }
-            Err(e) => {
-                let trap = Trap::Exception(e);
-                self.take_trap(trap, pc);
-                StepResult::Trapped(trap)
+        let mode = self.mode;
+        if let Err(e) = exec::execute(self, bus, insn, raw) {
+            return self.trap_exception(e, pc);
+        }
+        self.csr.retire();
+        if self.tracing() {
+            self.emit_commit(mode, pc, raw);
+        }
+        StepResult::Retired
+    }
+
+    /// Execute MRET, SRET, WFI, or a Zicsr instruction, then arrange to re-poll interrupts.
+    #[inline(never)]
+    fn step_serializing(&mut self, bus: &mut Bus, insn: decode::Insn, raw: u32) -> StepResult {
+        let pc = self.pc;
+        let lockstep = self.config.lockstep_irq;
+        // Spike serializes before every Zicsr instruction, which polls interrupts.
+        if lockstep && insn.op.is_csr() {
+            if let Some(trap) = self.poll_interrupts(bus) {
+                return StepResult::Trapped(trap);
             }
         }
+        if self.tracing() {
+            self.commit.clear();
+        }
+        let mode = self.mode;
+        if let Err(e) = exec::execute_serializing(self, bus, insn, raw) {
+            return self.trap_exception(e, pc);
+        }
+        self.csr.retire();
+        if insn.op == decode::Op::Wfi {
+            self.wfi_retired = true;
+            // A WFI with an interrupt already pending must not stall.
+            if !lockstep {
+                self.irq_poll = true;
+            }
+        } else {
+            self.irq_poll = true;
+        }
+        if self.tracing() {
+            self.emit_commit(mode, pc, raw);
+        }
+        StepResult::Retired
+    }
+
+    #[cold]
+    fn trap_exception(&mut self, e: Exception, pc: u64) -> StepResult {
+        let trap = Trap::Exception(e);
+        self.take_trap(trap, pc);
+        if !self.config.lockstep_irq {
+            self.irq_poll = true;
+        }
+        StepResult::Trapped(trap)
+    }
+
+    #[cold]
+    fn emit_commit(&mut self, mode: Priv, pc: u64, raw: u32) {
+        self.commit.mode = mode as u8;
+        self.commit.pc = pc;
+        self.commit.insn = raw;
+        self.commit.len = if raw & 3 == 3 { 4 } else { 2 };
+        let commit = core::mem::take(&mut self.commit);
+        if let Some(t) = self.tracer.as_mut() {
+            t.commit(&commit);
+        }
+        self.commit = commit;
     }
 
     /// The highest-priority interrupt that is pending, enabled, and not masked by the

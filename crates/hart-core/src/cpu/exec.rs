@@ -53,7 +53,7 @@ pub fn fetch_decoded(cpu: &mut Cpu, bus: &mut Bus) -> Result<(Insn, u32), Except
 /// it. Returns `None` for a 32-bit instruction that continues on the next page, which
 /// needs a second translation.
 #[cold]
-fn fill_code(bus: &mut Bus, pc: u64, off: usize) -> Option<(Insn, u32)> {
+pub(crate) fn fill_code(bus: &mut Bus, pc: u64, off: usize) -> Option<(Insn, u32)> {
     let lo = bus.ram.read_at(off, 2) as u32;
     let raw = if lo & 3 != 3 {
         lo
@@ -67,15 +67,6 @@ fn fill_code(bus: &mut Bus, pc: u64, off: usize) -> Option<(Insn, u32)> {
         bus.ram.cache_code(off, CodeSlot { insn, raw });
     }
     Some((insn, raw))
-}
-
-/// Fetch, decode, and execute one instruction at `cpu.pc`. On success returns the raw
-/// instruction bits and leaves `pc` at the next instruction. On an exception, `pc` is
-/// unchanged.
-pub fn step(cpu: &mut Cpu, bus: &mut Bus) -> Result<u32, Exception> {
-    let raw = fetch(cpu, bus)?;
-    execute(cpu, bus, decode(raw), raw)?;
-    Ok(raw)
 }
 
 #[inline]
@@ -92,14 +83,15 @@ fn ecall_cause(mode: Priv) -> ExceptionCause {
 }
 
 /// Execute a decoded instruction. `raw` is used for tracing and illegal-instruction tval.
+#[inline(always)]
 pub fn execute(cpu: &mut Cpu, bus: &mut Bus, i: Insn, raw: u32) -> Result<(), Exception> {
     use Op::*;
     let pc = cpu.pc;
     let len = if raw & 3 == 3 { 4 } else { 2 };
     let mut next = pc.wrapping_add(len);
     let rd = i.rd as u32;
-    let a = cpu.x[i.rs1 as usize];
-    let b = cpu.x[i.rs2 as usize];
+    let a = cpu.x[i.rs1 as usize & 31];
+    let b = cpu.x[i.rs2 as usize & 31];
     let imm = i.imm as i64 as u64;
     let illegal = || Exception::illegal(if len == 2 { raw & 0xffff } else { raw });
     match i.op {
@@ -301,27 +293,8 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, i: Insn, raw: u32) -> Result<(), Ex
         FenceI => cpu.flush_icache(),
         Ecall => return Err(Exception::new(ecall_cause(cpu.mode), 0)),
         Ebreak => return Err(Exception::new(ExceptionCause::Breakpoint, pc)),
-        Mret => {
-            if cpu.mode != Priv::Machine {
-                return Err(illegal());
-            }
-            csr::mret(cpu);
-            return Ok(());
-        }
-        Sret => {
-            let tsr = cpu.csr.mstatus & csr::MSTATUS_TSR != 0;
-            if cpu.mode == Priv::User || (cpu.mode == Priv::Supervisor && tsr) {
-                return Err(illegal());
-            }
-            csr::sret(cpu);
-            return Ok(());
-        }
-        Wfi => {
-            let tw = cpu.csr.mstatus & csr::MSTATUS_TW != 0;
-            if cpu.mode == Priv::User || (cpu.mode == Priv::Supervisor && tw) {
-                return Err(illegal());
-            }
-            cpu.waiting = true;
+        Mret | Sret | Wfi | Csrrw | Csrrs | Csrrc | Csrrwi | Csrrsi | Csrrci => {
+            return execute_serializing(cpu, bus, i, raw);
         }
         SfenceVma => {
             let tvm = cpu.csr.mstatus & csr::MSTATUS_TVM != 0;
@@ -329,37 +302,6 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, i: Insn, raw: u32) -> Result<(), Ex
                 return Err(illegal());
             }
             cpu.mmu.flush();
-        }
-        Csrrw | Csrrs | Csrrc | Csrrwi | Csrrsi | Csrrci => {
-            let addr = i.imm as u16 & 0xfff;
-            let src = match i.op {
-                Csrrw | Csrrs | Csrrc => a,
-                _ => i.rs1 as u64,
-            };
-            let raw32 = raw;
-            match i.op {
-                Csrrw | Csrrwi => {
-                    let old = if rd != 0 { Some(csr::read(cpu, bus, addr, raw32)?) } else { None };
-                    csr::write(cpu, bus, addr, src, raw32)?;
-                    if let Some(old) = old {
-                        cpu.set_x(rd, old);
-                    }
-                }
-                _ => {
-                    let old = csr::read(cpu, bus, addr, raw32)?;
-                    if i.rs1 != 0 {
-                        // Read-modify-write of mip/sip uses only the software-writable bits.
-                        let base = match addr {
-                            csr::MIP => cpu.csr.mip,
-                            csr::SIP => cpu.csr.mip & cpu.csr.mideleg,
-                            _ => old,
-                        };
-                        let new = if matches!(i.op, Csrrs | Csrrsi) { base | src } else { base & !src };
-                        csr::write(cpu, bus, addr, new, raw32)?;
-                    }
-                    cpu.set_x(rd, old);
-                }
-            }
         }
         Fp => {
             fp::execute(cpu, bus, i.imm as u32).map_err(|e| {
@@ -372,5 +314,72 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, i: Insn, raw: u32) -> Result<(), Ex
         }
     }
     cpu.pc = next;
+    Ok(())
+}
+
+/// Execute MRET, SRET, WFI, or a Zicsr instruction. Kept out of line so the hot
+/// `execute` stays small.
+#[inline(never)]
+pub fn execute_serializing(cpu: &mut Cpu, bus: &mut Bus, i: Insn, raw: u32) -> Result<(), Exception> {
+    use Op::*;
+    // None of these have compressed forms.
+    let illegal = Exception::illegal(raw);
+    let rd = i.rd as u32;
+    match i.op {
+        Mret => {
+            if cpu.mode != Priv::Machine {
+                return Err(illegal);
+            }
+            csr::mret(cpu);
+            return Ok(());
+        }
+        Sret => {
+            let tsr = cpu.csr.mstatus & csr::MSTATUS_TSR != 0;
+            if cpu.mode == Priv::User || (cpu.mode == Priv::Supervisor && tsr) {
+                return Err(illegal);
+            }
+            csr::sret(cpu);
+            return Ok(());
+        }
+        Wfi => {
+            let tw = cpu.csr.mstatus & csr::MSTATUS_TW != 0;
+            if cpu.mode == Priv::User || (cpu.mode == Priv::Supervisor && tw) {
+                return Err(illegal);
+            }
+            cpu.waiting = true;
+        }
+        Csrrw | Csrrs | Csrrc | Csrrwi | Csrrsi | Csrrci => {
+            let addr = i.imm as u16 & 0xfff;
+            let src = match i.op {
+                Csrrw | Csrrs | Csrrc => cpu.x[i.rs1 as usize],
+                _ => i.rs1 as u64,
+            };
+            match i.op {
+                Csrrw | Csrrwi => {
+                    let old = if rd != 0 { Some(csr::read(cpu, bus, addr, raw)?) } else { None };
+                    csr::write(cpu, bus, addr, src, raw)?;
+                    if let Some(old) = old {
+                        cpu.set_x(rd, old);
+                    }
+                }
+                _ => {
+                    let old = csr::read(cpu, bus, addr, raw)?;
+                    if i.rs1 != 0 {
+                        // Read-modify-write of mip/sip uses only the software-writable bits.
+                        let base = match addr {
+                            csr::MIP => cpu.csr.mip,
+                            csr::SIP => cpu.csr.mip & cpu.csr.mideleg,
+                            _ => old,
+                        };
+                        let new = if matches!(i.op, Csrrs | Csrrsi) { base | src } else { base & !src };
+                        csr::write(cpu, bus, addr, new, raw)?;
+                    }
+                    cpu.set_x(rd, old);
+                }
+            }
+        }
+        _ => unreachable!("not a serializing op: {:?}", i.op),
+    }
+    cpu.pc = cpu.pc.wrapping_add(4);
     Ok(())
 }

@@ -66,11 +66,13 @@ pub struct TlbEntry {
 
 const EMPTY: TlbEntry = TlbEntry { tag: INVALID, off: 0 };
 
+type Tlb = Box<[TlbEntry; TLB_SIZE]>;
+
 #[derive(Clone, Debug)]
 pub struct Mmu {
-    pub fetch: Box<[TlbEntry]>,
-    pub load: Box<[TlbEntry]>,
-    pub store: Box<[TlbEntry]>,
+    pub fetch: Tlb,
+    pub load: Tlb,
+    pub store: Tlb,
     /// Tag context for fetches (current mode).
     pub fetch_ctx: u64,
     /// Tag context for loads and stores (effective mode, SUM, MXR).
@@ -85,7 +87,7 @@ impl Default for Mmu {
 
 impl Mmu {
     pub fn new() -> Self {
-        let t = || vec![EMPTY; TLB_SIZE].into_boxed_slice();
+        let t = || -> Tlb { Box::new([EMPTY; TLB_SIZE]) };
         Mmu { fetch: t(), load: t(), store: t(), fetch_ctx: 3 << CTX_SHIFT, data_ctx: 3 << CTX_SHIFT }
     }
 
@@ -176,6 +178,10 @@ pub fn translate(cpu: &mut Cpu, bus: &mut Bus, vaddr: u64, size: u8, access: Acc
 
 #[cold]
 fn translate_slow(cpu: &mut Cpu, bus: &mut Bus, vaddr: u64, size: u8, access: Access) -> Result<u64, Exception> {
+    // Device accesses always come through here and can change interrupt lines.
+    if !cpu.config.lockstep_irq {
+        cpu.irq_poll = true;
+    }
     let mode = effective_mode(cpu, access);
     let paddr = if mode == Priv::Machine || cpu.csr.satp_mode() != csr::SATP_MODE_SV39 {
         vaddr

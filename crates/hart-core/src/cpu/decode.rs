@@ -107,10 +107,11 @@ pub enum Op {
     FenceI,
     Ecall,
     Ebreak,
+    SfenceVma,
+    // Mret through Csrrci must stay contiguous: see `Op::is_serializing`.
     Mret,
     Sret,
     Wfi,
-    SfenceVma,
     /// CSR ops: `imm` is the CSR address; for the `*i` forms `rs1` is the 5-bit immediate.
     Csrrw,
     Csrrs,
@@ -123,6 +124,13 @@ pub enum Op {
 }
 
 impl Op {
+    /// MRET, SRET, WFI, or a Zicsr instruction: the ops after which the CPU re-polls
+    /// interrupts.
+    #[inline(always)]
+    pub fn is_serializing(self) -> bool {
+        (self as u8).wrapping_sub(Op::Mret as u8) <= Op::Csrrci as u8 - Op::Mret as u8
+    }
+
     #[inline]
     pub fn is_csr(self) -> bool {
         matches!(self, Op::Csrrw | Op::Csrrs | Op::Csrrc | Op::Csrrwi | Op::Csrrsi | Op::Csrrci)
