@@ -388,7 +388,7 @@
             "lrsc": "AccessFault"
           },
           "atomic_support": "AMOCASQ",
-          "misaligned_atomicity_granule_size_exp": 0,
+          "misaligned_atomicity_granule_size_exp": 12,
           "vector_misaligned_atomicity_granule_size_exp": 0,
           "reservability": "RsrvEventual",
           "supports_cbo_zero": true,

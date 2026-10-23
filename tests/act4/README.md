@@ -125,7 +125,7 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `SATP_MODE_BARE` | true | IC L73 |
 | `MTVEC_MODES`, `STVEC_MODES` [0,1]; base alignment 4 | | IC L25 |
 | `MTVEC_ILLEGAL_WRITE_BEHAVIOR` | custom (**changed** from retain) | IC L25: mode 2/3 become 0/1, which is not "retain" |
-| `REPORT_VA_IN_*TVAL_ON_*` true; `REPORT_ENCODING_IN_*TVAL_ON_ILLEGAL_INSTRUCTION` true; `*TVAL_WIDTH` 64 | | IC L52–55 (misaligned exceptions are never raised: L56, L62) |
+| `REPORT_VA_IN_*TVAL_ON_*` true; `REPORT_ENCODING_IN_*TVAL_ON_ILLEGAL_INSTRUCTION` true; `*TVAL_WIDTH` 64 | | IC L52–55 (misaligned exceptions are never raised: IC L56, L62) |
 | `TIME_CSR_IMPLEMENTED` | true | IC L46 |
 | `MCOUNTENABLE_EN`, `SCOUNTENABLE_EN` | all 32 | IC L45 |
 | `HPM_COUNTER_EN` | all false (**changed**); `HPM_COUNTERn_WIDTH` and `HPM_EVENTS` removed because UDB defines them only for enabled counters | IC L43 |
@@ -138,7 +138,8 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `MISALIGNED_LDST` true; `MISALIGNED_LDST_EXCEPTION_PRIORITY` low; `MISALIGNED_SPLIT_STRATEGY` sequential_bytes | | IC L62: no misaligned exceptions; the lowest faulting address is reported. hart checks both pages before writing anything; no generated test distinguishes this (see limits below) |
 | `NUM_PMP_ENTRIES` 16, `NUM_USABLE_PMP_ENTRIES` 16, `PMP_GRANULARITY` 2 (4 bytes), `PMP_TOR/NA4/NAPOT_SUPPORTED` true | | IC L83, L85 |
 | `PHYS_ADDR_WIDTH` | 56 | Not stated in IC; `pmpaddr` holds PA bits 55:2 (`crates/hart-core/src/cpu/pmp.rs`) |
-| `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE` 4096, `PMA_GRANULARITY` 3 | unchanged | Not used for test selection or generation; atomicity is unobservable on a single hart |
+| `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE` | 4096 | IC L62: a misaligned RAM access within one page is one access: one translation and one PMP check over the whole range (a partial overlap faults, IC L89), with `xtval` = the start address (`load_slow`/`store_slow` in `crates/hart-core/src/cpu/mod.rs`). Matches the RAM region's 4 KiB misaligned atomicity granule in `sail.json` |
+| `PMA_GRANULARITY` | 3 (unchanged) | Not used for test selection or generation |
 
 ### Sail configuration (`sail.json`)
 
@@ -160,6 +161,8 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `memory.pmp` | 16 entries, all usable, grain 0, TOR/NA4/NAPOT | IC L83, L85 |
 | `memory.misaligned.exceptions` | scalar loads/stores none; AMO and LR/SC AccessFault | IC L62, L64 |
 | `memory.regions` RAM | 0x8000_0000, 2 GiB, main memory | IC L136 (test profile RAM, 2 GiB default) and `link.ld` |
+| `memory.regions` RAM `misaligned_atomicity_granule_size_exp` | 12 (**changed** from 0) | IC L62, L89: a misaligned access that stays within a 4 KiB page is performed as one access with one PMP check, as in hart. With 0, Sail split it into aligned chunks and PMP-checked each, which differs for an access that straddles a PMP boundary inside a page |
+| `memory.misaligned.default_allowed_within_exp` | 0 (unchanged) | Applies only where the MAG does not: page-crossing RAM accesses (see limits below); misaligned device accesses fault first (IC L63) |
 | `memory.regions` MMIO | 0x0200_0000–0x1200_0000, misaligned scalar access AccessFault (**changed**) | IC L120, L63 (within a page; see limits below for page-crossing accesses) |
 | `memory.regions` ROM | **removed** | `hart --elf` has nothing at 0x1000 (IC L136) |
 | `platform.vendorid/archid/impid/hartid` | 0 | IC L14, L15 |
@@ -200,8 +203,11 @@ Sail has no option for a few hart choices. Each is listed with how it is handled
 - **WFI**: hart stalls until `mip & mie` is nonzero, completes when nothing could wake it,
   and skips `mtime` ahead to the timer otherwise (IC L67, L123, L135). Sail waits at most
   `max_time_to_wait` ticks. Both are allowed by the specification.
-- **Misaligned store that faults on its second page** (IC L62): hart writes no bytes; Sail
-  splits the access.
+- **Misaligned RAM access that crosses a page** (IC L62): hart translates and PMP-checks the
+  part on each page as one access each, before accessing any byte. Sail splits the access into
+  naturally aligned chunks and checks and performs them in increasing address order. The two
+  can differ when a PMP boundary lies inside one page's part, and in which bytes a store that
+  faults on its second page has already written.
 - **Misaligned device access that crosses a page** (IC L63): hart splits it into byte
   accesses; Sail's MMIO region raises an access fault for every misaligned access.
 
