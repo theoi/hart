@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/hart-core", "crates/hart-cli", "crates/hart-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/theoi/hart"
+rust-version = "1.86"
+
+[profile.dev]
+# The interpreter is unusably slow at opt-level 0, even for unit tests.
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

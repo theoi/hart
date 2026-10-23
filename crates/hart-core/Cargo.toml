@@ -1,0 +1,11 @@
+[package]
+name = "hart-core"
+description = "A from-scratch RV64GC hart, memory system, and virt-style platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# hart-core must stay free of third-party dependencies.
+[dependencies]
