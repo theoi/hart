@@ -181,10 +181,18 @@ impl CsrFile {
     /// Count one retired instruction (`mcycle` advances with `minstret`).
     #[inline]
     pub fn retire(&mut self) {
-        if self.mcountinhibit & 1 == 0 {
+        self.retire_with_inhibit(self.mcountinhibit);
+    }
+
+    /// Count one retired instruction under `inhibit`, the `mcountinhibit` value from
+    /// before the instruction executed: an instruction that writes `mcountinhibit` is
+    /// counted according to the old value, as in Spike and Sail.
+    #[inline]
+    pub fn retire_with_inhibit(&mut self, inhibit: u64) {
+        if inhibit & 1 == 0 {
             self.mcycle = self.mcycle.wrapping_add(1);
         }
-        if self.mcountinhibit & 4 == 0 {
+        if inhibit & 4 == 0 {
             self.minstret = self.minstret.wrapping_add(1);
         }
     }
@@ -302,6 +310,7 @@ pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Resu
     if (addr >> 8) & 3 > cpu.mode as u16 || addr >> 10 == 3 {
         return Err(illegal);
     }
+    let old_mip = cpu.csr.mip;
     let c = &mut cpu.csr;
     match addr {
         FFLAGS | FRM | FCSR => {
@@ -374,15 +383,16 @@ pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Resu
         _ => return Err(illegal),
     }
     if cpu.tracing() {
-        log_write(cpu, bus, addr);
+        log_write(cpu, bus, addr, old_mip);
     }
     Ok(())
 }
 
 const MVIP: u16 = 0x309;
 
-/// Record the commit-log entries Spike produces for a write to `addr`.
-fn log_write(cpu: &mut Cpu, bus: &Bus, addr: u16) {
+/// Record the commit-log entries Spike produces for a write to `addr`. `old_mip` is
+/// the software-writable `mip` state from before the write.
+fn log_write(cpu: &mut Cpu, bus: &Bus, addr: u16, old_mip: u64) {
     let c = &cpu.csr;
     match addr {
         SSTATUS | MSTATUS => {
@@ -395,9 +405,11 @@ fn log_write(cpu: &mut Cpu, bus: &Bus, addr: u16) {
             cpu.log_csr_write(MIE, mie);
         }
         SIP | MIP => {
-            // Spike keeps the software SEIP bit in mvip; its logged mip excludes it.
-            let mvip = c.mip & MIP_WMASK;
-            let mip = (c.mip & !bits::SEIP) | hw_mip(bus);
+            // Spike keeps the software SEIP bit in mvip and logs mvip before it updates
+            // mip, so the logged mvip has the new SEIP but the old SSIP and STIP. Its
+            // logged mip is the full read value, software SEIP included.
+            let mvip = (c.mip & bits::SEIP) | (old_mip & (bits::SSIP | bits::STIP));
+            let mip = mip(cpu, bus);
             cpu.log_csr_write(MVIP, mvip);
             cpu.log_csr_write(MIP, mip);
         }
@@ -655,6 +667,19 @@ mod tests {
         write(&mut cpu, &bus, MCONTEXT, !0, 0).unwrap();
         write(&mut cpu, &bus, SCONTEXT, !0, 0).unwrap();
         assert_eq!(take_csr_log(&mut cpu), [(HCONTEXT, 0x1fff), (SCONTEXT, 0xffff_ffff)]);
+    }
+
+    #[test]
+    fn mip_write_logs_like_spike() {
+        let mut cpu = Cpu::with_config(0x8000_0000, CpuConfig::spike());
+        cpu.set_tracer(Some(Box::new(Discard)));
+        let bus = Bus::new(0x8000_0000, 0x1000);
+        write(&mut cpu, &bus, MIP, bits::SEIP | bits::SSIP, 0).unwrap();
+        // mvip is logged before mip is updated: new SEIP, old SSIP.
+        assert_eq!(take_csr_log(&mut cpu), [(MVIP, bits::SEIP), (MIP, bits::SEIP | bits::SSIP)]);
+        assert_eq!(read(&cpu, &bus, MIP, 0), Ok(bits::SEIP | bits::SSIP));
+        write(&mut cpu, &bus, MIP, 0, 0).unwrap();
+        assert_eq!(take_csr_log(&mut cpu), [(MVIP, bits::SSIP), (MIP, 0)]);
     }
 
     #[test]

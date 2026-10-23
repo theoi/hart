@@ -323,6 +323,10 @@ fn execute_rare<const TRACE: bool>(
                 return Err(Exception::new(ExceptionCause::LoadAccessFault, a));
             }
             let pa = cpu.translate(bus, a, size, Access::Load)?;
+            // Only RAM is reservable (as in Spike and Sail's PMAs).
+            if bus.ram.offset(pa, size as u64).is_none() {
+                return Err(Exception::new(ExceptionCause::LoadAccessFault, a));
+            }
             let v = bus.read(pa, size).map_err(|_| Exception::new(ExceptionCause::LoadAccessFault, a))?;
             cpu.log_load_t::<TRACE>(a);
             cpu.reservation = Some(pa);
@@ -333,7 +337,12 @@ fn execute_rare<const TRACE: bool>(
             if a & (size as u64 - 1) != 0 {
                 return Err(Exception::new(ExceptionCause::StoreAccessFault, a));
             }
+            // An SC is translated and checked (PMP, and that the target is reservable
+            // RAM) even when it will fail, as in Spike and Sail.
             let pa = cpu.translate(bus, a, size, Access::Store)?;
+            if bus.ram.offset(pa, size as u64).is_none() {
+                return Err(Exception::new(ExceptionCause::StoreAccessFault, a));
+            }
             let ok = cpu.reservation == Some(pa);
             cpu.reservation = None;
             if ok {

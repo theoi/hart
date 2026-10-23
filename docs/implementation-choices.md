@@ -39,8 +39,9 @@ against Spike needs no special cases. The reference Spike configuration is
 | --- | --- |
 | `mcycle`, `minstret` | Both count retired instructions (CPI 1). A trapping instruction does not retire. WFI retires once. |
 | Writes to `mcycle`/`minstret` | The written value takes precedence over that instruction's own increment. |
-| `mcountinhibit` | CY, IR, and HPM3–31 are writable; TM is read-only zero. |
+| `mcountinhibit` | CY, IR, and HPM3–31 are writable; TM is read-only zero. A write applies from the next instruction: the instruction that writes `mcountinhibit` is counted under the old value, as in Spike and Sail. |
 | `mhpmcounter3`–`31`, `mhpmevent3`–`31` | Hardwired to zero (writes ignored). `hpmcounterN` read 0 when enabled. |
+| Commit log for `mip` and `sip` writes | `mvip` (0x309) and then `mip`, as Spike logs them. The logged `mip` is the value a read returns, including the software SEIP bit. The logged `mvip` has the new software SEIP bit but the old SSIP and STIP, because Spike logs it before it updates `mip`. |
 | Commit log for constant CSRs | Writes to `mhpmcounter3`–`31`, `tdata1`–`tdata3`, and `tinfo` produce no CSR entry, as in Spike. Writes to `tselect` and `mhpmevent3`–`31` log the value read back (0). A write to `mcontext` logs as `hcontext` (0x6a8), as Spike's proxy does. |
 | `mcounteren`, `scounteren` | All 32 bits writable. |
 | `time` | Reads the CLINT `mtime` value from `Wires`. |
@@ -62,7 +63,8 @@ against Spike needs no special cases. The reference Spike configuration is
 | Misaligned loads and stores | Supported in hardware for RAM (Zicclsm), including accesses that cross a page. Both pages are translated and PMP-checked before any byte is accessed. |
 | Misaligned access to a device region | Access fault when the access stays within one page. An access that crosses a page boundary is split into single-byte accesses after both pages are translated and checked. |
 | Misaligned AMO, LR, SC | Access fault: load access fault (5) for LR, store/AMO access fault (7) for SC and AMOs. Matches Spike and Sail's RVA20S64 configuration. |
-| LR/SC reservation | The physical address of the LR. SC succeeds only at that address, and any SC clears the reservation. SC is translated as a store first, so it can page-fault even when it would fail. Traps and xRET do not clear the reservation. |
+| LR/SC reservation | The physical address of the LR. SC succeeds only at that address, and any SC that completes clears the reservation. Traps and xRET do not clear it. |
+| LR/SC outside RAM | Only RAM is reservable. LR elsewhere raises a load access fault (5). Every SC, even one that will fail, is first translated and PMP-checked as a store and then checked against RAM, so it can raise a store page fault or store/AMO access fault (7) without a reservation. A faulting SC keeps the reservation. Matches Spike and Sail 0.16. |
 | FENCE, FENCE.I | Both are no-ops. Decoded instructions are cached per physical page and dropped on any write to that page, so instruction fetch always sees earlier stores. |
 | WFI | Stalls until `mip & mie` is nonzero, regardless of global interrupt enables. Illegal in U-mode, and in S-mode when `mstatus.TW` = 1. |
 

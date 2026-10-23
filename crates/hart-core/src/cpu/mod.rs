@@ -604,10 +604,11 @@ impl Cpu {
             self.commit.clear();
         }
         let mode = self.mode;
+        let inhibit = self.csr.mcountinhibit;
         if let Err(e) = exec::execute_serializing(self, bus, insn, raw) {
             return self.trap_exception(e, pc);
         }
-        self.csr.retire();
+        self.csr.retire_with_inhibit(inhibit);
         if insn.op == decode::Op::Wfi {
             self.wfi_retired = true;
             // A WFI with an interrupt already pending must not stall.
@@ -659,5 +660,50 @@ impl Cpu {
         if let Some(t) = self.tracer.as_mut() {
             t.trap(&trap, epc, from);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RAM: u64 = 0x8000_0000;
+
+    fn machine(insns: &[u32]) -> (Cpu, Bus) {
+        let mut bus = Bus::new(RAM, 0x1000);
+        let bytes: Vec<u8> = insns.iter().flat_map(|i| i.to_le_bytes()).collect();
+        bus.write_bytes(RAM, &bytes).unwrap();
+        (Cpu::new(RAM), bus)
+    }
+
+    #[test]
+    fn lr_and_sc_outside_ram_fault_even_without_a_reservation() {
+        // sc.w x1, x4, (x10); sc.w x2, x4, (x11); lr.w x3, (x10)
+        let (mut cpu, mut bus) = machine(&[0x1845_20af, 0x1845_a12f, 0x1005_21af]);
+        cpu.x[1] = 7;
+        cpu.x[11] = RAM + 0x800;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
+        assert_eq!((cpu.csr.mcause, cpu.csr.mtval, cpu.x[1]), (7, 0, 7));
+        // A failing SC to RAM just writes 1.
+        cpu.pc = RAM + 4;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Retired));
+        assert_eq!(cpu.x[2], 1);
+        assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
+        assert_eq!((cpu.csr.mcause, cpu.csr.mtval), (5, 0));
+    }
+
+    #[test]
+    fn a_write_to_mcountinhibit_is_counted_under_the_old_value() {
+        // csrrwi x0, mcountinhibit, 4; csrr x5, minstret
+        let (mut cpu, mut bus) = machine(&[0x3202_5073, 0xb020_22f3]);
+        cpu.step(&mut bus);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.x[5], 1);
+        // csrrwi x0, mcountinhibit, 0; csrr x5, minstret
+        let (mut cpu, mut bus) = machine(&[0x3200_5073, 0xb020_22f3]);
+        cpu.csr.mcountinhibit = 4;
+        cpu.step(&mut bus);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.x[5], 0);
     }
 }
