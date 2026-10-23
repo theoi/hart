@@ -5,3 +5,5 @@
 /tests/testfloat/build/
 __pycache__/
 /tests/boot/images/
+# Guest images downloaded by the README quick start.
+/images/
