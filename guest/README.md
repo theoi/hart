@@ -3,9 +3,11 @@
 `guest/build.sh` builds the guest software that hart boots: OpenSBI firmware, a
 Linux kernel, and a BusyBox root filesystem embedded in the kernel as an
 initramfs. Everything is built from pinned upstream source releases by a pinned
-Buildroot release. No source patches are applied. All customization lives in
-`br2-external/` as a defconfig, two config fragments, a root filesystem overlay,
-a post-build script, and one small demo package.
+Buildroot release. This project adds no source patches. All customization lives
+in `br2-external/` as a defconfig, two config fragments, a root filesystem
+overlay, a post-build script, and one small demo package. Buildroot itself
+applies its stock patches to a few packages; they are listed under
+[Patches](#patches).
 
 The published images are on the
 [`guest-v1` release](https://github.com/theoi/hart/releases/tag/guest-v1).
@@ -15,8 +17,8 @@ The published images are on the
 Requirements: a Linux host with the
 [packages Buildroot needs](https://buildroot.org/downloads/manual/manual.html#requirement-mandatory)
 (gcc, g++, make, perl, python3, rsync, bc, cpio, unzip, file, wget or curl), about
-12 GB of disk, and network access for the source downloads. A build takes about
-an hour on 4 cores.
+12 GB of disk, and network access for the source downloads. A build from scratch
+takes about 30 minutes on 4 cores.
 
 ```sh
 guest/build.sh                         # output in guest/out
@@ -62,6 +64,58 @@ Buildroot version string, which ends up in the compiler and every binary.
 | musl | 1.2.6 | musl.libc.org tarball |
 | GCC (cross compiler, builds everything) | 15.3.0 | GNU mirror tarball |
 | binutils | 2.45.1 | GNU mirror tarball |
+
+## Patches
+
+`guest/` contains no source patches (`board/hart/hashes` holds only a hash
+file). Buildroot 2026.08.1 applies its own stock patches from its `package/`
+directory to some packages, and these count as part of the pinned upstream
+release. Each build records them in `build/<package>/.applied_patches_list`,
+and `legal-info.tar` contains every applied patch next to its package's source.
+Linux, OpenSBI, and the kernel headers get no patches. These packages in the
+images do:
+
+BusyBox 1.38.0, from `package/busybox/`:
+
+| Patch | Purpose |
+|-------|---------|
+| `0001-networking-libiproute-use-linux-if_packet.h-instead-.patch` | Build fix: include `<linux/if_packet.h>` instead of `<net/if_packet.h>`. |
+| `0002-Makefile.flags-strip-non-l-arguments-returned-by-pkg.patch` | Build fix: keep only `-l` arguments from `pkg-config` output. |
+| `0003-libbb-sockaddr2str-ensure-only-printable-characters-.patch` | Security: host names from `sockaddr2str` contain only printable characters. |
+| `0004-nslookup-sanitize-all-printed-strings-with-printable.patch` | Security: `nslookup` sanitizes every string it prints. |
+| `0005-seedrng-fix-getrandom-detection-for-non-glibc-libc.patch` | Build fix: detect `getrandom()` on C libraries other than glibc. |
+| `0006-tc-Fix-compilation-with-Linux-v6.8-rc1.patch` | Build fix: `tc` compiles against Linux 6.8 and later headers. |
+| `0007-awk.c-fix-CVE-2023-42366-bug-15874.patch` | Security: `awk` fix for CVE-2023-42366 (BusyBox bug 15874). |
+| `0008-hwclock-Check-for-SYS_settimeofday-before-calling-sy.patch` | Build fix: `hwclock` checks that `SYS_settimeofday` exists before using it. |
+| `0009-syslogd-fix-wrong-OPT_locallog-flag-detection.patch` | Bug fix: `syslogd` detects its local-log option correctly. |
+| `0010-testsuite-tar-tests-fix-test-after-cve-2025-46394.patch` | Test-suite fix after CVE-2025-46394 (the test suite is not installed). |
+| `0011-wget-dont-allow-control-characters-or-spaces-in-the-URL.patch` | Security: `wget` rejects control characters and spaces in URLs. |
+| `0012-netstat-sanitize-argv0-for-p-CVE-2024-58251.patch` | Security: `netstat -p` sanitizes program names (CVE-2024-58251). |
+
+musl 1.2.6, from `package/musl/`:
+
+| Patch | Purpose |
+|-------|---------|
+| `0001-avoid-kernel-if_ether.h.patch` | Header fix: avoid redefining `struct ethhdr` when kernel headers are also included. |
+| `0002-package-musl-Make-scheduler-functions-Linux-compatib.patch` | Make the `sched_*` scheduler functions call the Linux system calls. |
+| `0003-fix-pathological-slowness-incorrect-mappings-in-icon.patch` | Bug fix: `iconv` GB18030 decoder speed and mappings (upstream fix). |
+| `0004-qsort-fix-leonardo-heap-corruption-from-bug-in-doubl.patch` | Bug fix: `qsort` heap corruption from a double-word count-trailing-zeros bug (upstream fix). |
+| `0005-qsort-hard-preclude-oob-array-writes-independent-of-.patch` | Hardening: `qsort` cannot write out of bounds (upstream fix). |
+| `0006-qsort-fix-shift-UB-in-shl-and-shr.patch` | Bug fix: undefined shifts in `qsort` helpers (upstream fix). |
+
+GCC 15.3.0, from `package/gcc/15.3.0/`. GCC is the cross compiler, but the same
+build produces `libgcc_s.so.1` and `libatomic.so.1`, which are in the root
+filesystem:
+
+| Patch | Purpose |
+|-------|---------|
+| `0001-disable-split-stack-for-non-thread-builds.patch` | Build fix: disable split-stack support when threads are disabled. |
+| `0002-gcc-config-microblaze-fix-ira-for-GCC15.patch` | MicroBlaze back-end fix (no effect on RISC-V). |
+| `0003-PR-rtl-optimization-123833-Use-of-insn-attributes-in.patch` | Compiler fix for PR rtl-optimization/123833. |
+| `0004-microblaze-add-Linux-signal-frame-unwinding-support.patch` | MicroBlaze unwinding support (no effect on RISC-V). |
+
+Host tools that run only during the build (binutils, Python, autotools, and
+others) also get Buildroot's stock patches; nothing from them is in the images.
 
 ## Booting
 

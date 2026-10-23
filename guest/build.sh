@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # Builds the hart guest image (OpenSBI + Linux + BusyBox/musl initramfs) from
-# pinned upstream sources with Buildroot. No source patches are applied; all
-# customization lives in guest/br2-external (defconfig, config fragments,
-# rootfs overlay, and the demo package).
+# pinned upstream sources with Buildroot. This project adds no source patches
+# (Buildroot applies its own stock package patches; guest/README.md lists
+# them); all customization lives in guest/br2-external (defconfig, config
+# fragments, rootfs overlay, and the demo package).
 #
 # Usage: guest/build.sh [--legal-info] [OUTPUT_DIR]
 #   OUTPUT_DIR defaults to guest/out. Images and SHA256SUMS land in

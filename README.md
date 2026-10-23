@@ -142,9 +142,11 @@ gcc-riscv64-unknown-elf`) and `autoconf`. The Spike and browser instructions are
 
 ## Guest software
 
-The guest images contain unmodified upstream software. [`guest/build.sh`](guest/README.md)
-builds them from pinned source releases with Buildroot 2026.08.1 and applies no source
-patches:
+The guest images contain upstream software with no patches written by this project.
+[`guest/build.sh`](guest/README.md) builds them from pinned source releases with Buildroot
+2026.08.1. Linux and OpenSBI are built from their release tarballs as is; Buildroot's own
+stock patches for BusyBox, musl, and GCC are listed in
+[`guest/README.md`](guest/README.md#patches):
 
 | Component | Version | License |
 | --- | --- | --- |
