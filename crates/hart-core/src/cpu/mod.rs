@@ -339,8 +339,7 @@ impl Cpu {
         if self.tracing() {
             self.commit.clear();
         }
-        let result = exec::fetch(self, bus).and_then(|raw| {
-            let insn = decode::decode(raw);
+        let result = exec::fetch_decoded(self, bus).and_then(|(insn, raw)| {
             // Spike serializes before every Zicsr instruction, which polls interrupts.
             if lockstep && insn.op.is_csr() {
                 if let Some(trap) = self.poll_interrupts(bus) {

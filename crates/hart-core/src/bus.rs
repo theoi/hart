@@ -1,5 +1,6 @@
 //! The physical memory bus: one RAM region plus memory-mapped devices.
 
+use crate::cpu::decode::Insn;
 use crate::irq::Wires;
 use core::any::Any;
 
@@ -25,15 +26,93 @@ pub trait Device: Any {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId(usize);
 
-/// Main memory.
+/// A decoded instruction cached for one 2-byte-aligned RAM address. `raw == 0` marks
+/// an empty slot (the all-zero encoding is always illegal, so it is never cached).
+#[derive(Clone, Copy, Debug)]
+pub struct CodeSlot {
+    pub insn: Insn,
+    pub raw: u32,
+}
+
+const EMPTY_SLOT: CodeSlot = CodeSlot { insn: Insn::ILLEGAL, raw: 0 };
+/// Slots per 4 KiB page.
+pub const CODE_SLOTS: usize = 2048;
+type CodePage = Box<[CodeSlot; CODE_SLOTS]>;
+/// Freed decoded pages kept for reuse.
+const SPARE_PAGES: usize = 64;
+
+/// Main memory, plus a cache of decoded instructions for each RAM page that has been
+/// executed. Every write into a page drops that page's decoded instructions, so the
+/// cache never holds stale code.
 pub struct Ram {
     base: u64,
     data: Vec<u8>,
+    code: Vec<Option<CodePage>>,
+    spare: Vec<CodePage>,
 }
 
 impl Ram {
     pub fn new(base: u64, size: usize) -> Self {
-        Ram { base, data: vec![0; size] }
+        let pages = size.div_ceil(4096);
+        Ram { base, data: vec![0; size], code: (0..pages).map(|_| None).collect(), spare: Vec::new() }
+    }
+
+    /// The cached decode for the instruction at byte offset `off`, if any.
+    #[inline(always)]
+    pub(crate) fn cached_code(&self, off: usize) -> Option<CodeSlot> {
+        let page = self.code[off >> 12].as_ref()?;
+        let slot = page[(off & 0xfff) >> 1];
+        (slot.raw != 0).then_some(slot)
+    }
+
+    /// Cache the decode of the instruction at byte offset `off`. The instruction must
+    /// lie entirely inside one page.
+    pub(crate) fn cache_code(&mut self, off: usize, slot: CodeSlot) {
+        let p = off >> 12;
+        if self.code[p].is_none() {
+            let page = match self.spare.pop() {
+                Some(mut page) => {
+                    page.fill(EMPTY_SLOT);
+                    page
+                }
+                None => Box::new([EMPTY_SLOT; CODE_SLOTS]),
+            };
+            self.code[p] = Some(page);
+        }
+        if let Some(page) = self.code[p].as_mut() {
+            page[(off & 0xfff) >> 1] = slot;
+        }
+    }
+
+    /// Drop decoded instructions for the pages touched by a write of `len` bytes at `off`.
+    #[inline(always)]
+    fn invalidate(&mut self, off: usize, len: usize) {
+        let first = off >> 12;
+        if self.code[first].is_some() {
+            self.drop_code(first);
+        }
+        let last = (off + len - 1) >> 12;
+        if last != first && self.code[last].is_some() {
+            self.drop_code(last);
+        }
+    }
+
+    #[cold]
+    fn drop_code(&mut self, page: usize) {
+        if let Some(p) = self.code[page].take() {
+            if self.spare.len() < SPARE_PAGES {
+                self.spare.push(p);
+            }
+        }
+    }
+
+    /// Drop all decoded instructions.
+    pub fn flush_code(&mut self) {
+        for p in 0..self.code.len() {
+            if self.code[p].is_some() {
+                self.drop_code(p);
+            }
+        }
     }
 
     #[inline]
@@ -51,8 +130,10 @@ impl Ram {
         &self.data
     }
 
+    /// Mutable access to all of RAM. Drops every cached decoded instruction.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.flush_code();
         &mut self.data
     }
 
@@ -83,6 +164,7 @@ impl Ram {
     /// Little-endian write at a byte offset that the caller knows is in range.
     #[inline(always)]
     pub(crate) fn write_at(&mut self, off: usize, size: u8, value: u64) {
+        self.invalidate(off, size as usize);
         let bytes = value.to_le_bytes();
         self.data[off..off + size as usize].copy_from_slice(&bytes[..size as usize]);
     }
@@ -104,12 +186,11 @@ impl Ram {
     /// Little-endian write of 1, 2, 4, or 8 bytes. Any alignment.
     #[inline]
     pub fn write(&mut self, paddr: u64, size: u8, value: u64) -> Option<()> {
-        let off = self.offset(paddr, size as u64)?;
-        let bytes = value.to_le_bytes();
-        match size {
-            1 | 2 | 4 | 8 => self.data[off..off + size as usize].copy_from_slice(&bytes[..size as usize]),
-            _ => return None,
+        if !matches!(size, 1 | 2 | 4 | 8) {
+            return None;
         }
+        let off = self.offset(paddr, size as u64)?;
+        self.write_at(off, size, value);
         Some(())
     }
 }
@@ -221,6 +302,16 @@ impl Bus {
     /// Copy bytes into RAM (image loading). Fails unless the whole range is RAM.
     pub fn write_bytes(&mut self, paddr: u64, bytes: &[u8]) -> Result<(), BusFault> {
         let off = self.ram.offset(paddr, bytes.len() as u64).ok_or(BusFault)?;
+        if !bytes.is_empty() {
+            self.ram.invalidate(off, bytes.len());
+            let first = off >> 12;
+            let last = (off + bytes.len() - 1) >> 12;
+            for p in first + 1..last {
+                if self.ram.code[p].is_some() {
+                    self.ram.drop_code(p);
+                }
+            }
+        }
         self.ram.data[off..off + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }

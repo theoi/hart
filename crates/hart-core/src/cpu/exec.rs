@@ -3,7 +3,7 @@
 use super::csr;
 use super::decode::{decode, Insn, Op};
 use super::{fp, Access, Cpu, Exception, ExceptionCause, Priv};
-use crate::bus::Bus;
+use crate::bus::{Bus, CodeSlot};
 
 /// Fetch the instruction at `cpu.pc`. Returns the raw bits (16-bit encodings in the low
 /// half). A 32-bit instruction that crosses a page boundary is fetched in two parts.
@@ -29,6 +29,44 @@ pub fn fetch(cpu: &mut Cpu, bus: &mut Bus) -> Result<u32, Exception> {
         let hi = bus.read(pa2, 2).map_err(|_| Access::Fetch.access_fault(pc2))? as u32;
         Ok(lo | (hi << 16))
     }
+}
+
+/// Fetch and decode the instruction at `cpu.pc`, using the decoded-instruction cache
+/// for RAM pages reachable through the fetch TLB.
+#[inline(always)]
+pub fn fetch_decoded(cpu: &mut Cpu, bus: &mut Bus) -> Result<(Insn, u32), Exception> {
+    let pc = cpu.pc;
+    if let Some(page) = cpu.mmu.lookup(pc, Access::Fetch) {
+        let off = page as usize + (pc & 0xfff) as usize;
+        if let Some(slot) = bus.ram.cached_code(off) {
+            return Ok((slot.insn, slot.raw));
+        }
+        if let Some(r) = fill_code(bus, pc, off) {
+            return Ok(r);
+        }
+    }
+    let raw = fetch(cpu, bus)?;
+    Ok((decode(raw), raw))
+}
+
+/// Decode the instruction at RAM offset `off` (reached through a fetch TLB hit) and cache
+/// it. Returns `None` for a 32-bit instruction that continues on the next page, which
+/// needs a second translation.
+#[cold]
+fn fill_code(bus: &mut Bus, pc: u64, off: usize) -> Option<(Insn, u32)> {
+    let lo = bus.ram.read_at(off, 2) as u32;
+    let raw = if lo & 3 != 3 {
+        lo
+    } else if pc & 0xfff == 0xffe {
+        return None;
+    } else {
+        bus.ram.read_at(off, 4) as u32
+    };
+    let insn = decode(raw);
+    if raw != 0 {
+        bus.ram.cache_code(off, CodeSlot { insn, raw });
+    }
+    Some((insn, raw))
 }
 
 /// Fetch, decode, and execute one instruction at `cpu.pc`. On success returns the raw
