@@ -23,6 +23,7 @@ for (const size of sizes) {
     await page.goto(baseURL!);
     await waitForPrompt(page, script, script.bootTimeoutMs);
     await runCommand(page, script, 'uname -a');
+    await runCommand(page, script, 'mandelbrot');
     // Let the status line show a speed reading and a few seconds of uptime.
     await page.waitForTimeout(1500);
     await page.screenshot({ path: join(outDir, `${browserName}-${size.name}.png`) });

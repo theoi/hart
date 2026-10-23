@@ -37,8 +37,9 @@ test('keys typed during boot reach the shell intact', async ({ page, baseURL }) 
     timeout: script.bootTimeoutMs,
   });
   await page.locator('#terminal').click();
-  // The arithmetic makes the expected output differ from the echoed input.
-  await page.keyboard.type('echo early-$((6*7))', { delay: 15 });
+  // No typing delay: the whole boot can take under a second. The arithmetic makes the
+  // expected output differ from the echoed input.
+  await page.keyboard.type('echo early-$((6*7))');
   await page.keyboard.press('Enter');
   expect(await page.evaluate(() => window.hart.state), 'typing finished before the first prompt').toBe('booting');
 

@@ -19,8 +19,8 @@ export interface CommandScript {
   /** The file this script was read from; exact_file paths are relative to its directory. */
   source: string;
   prompt: { text: string; regex: string };
-  /** Expected on the line before the first prompt; null when checking is disabled. */
-  banner: string | null;
+  /** Printed on the line before the first prompt. */
+  banner: string;
   enter: string;
   terminal: { cols: number; rows: number };
   bootTimeoutMs: number;
@@ -30,27 +30,16 @@ export interface CommandScript {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Loads the shared command script (tests/script/commands.json, or HART_SCRIPT).
- *
- * HART_PROMPT overrides the prompt for guest images that predate the spec, such as the
- * dev pilot image, which prints "# " and no banner; the banner check is then skipped.
- */
+/** Loads the shared command script (tests/script/commands.json, or HART_SCRIPT). */
 export function loadScript(): CommandScript {
   const source = resolve(process.env.HART_SCRIPT ?? join(here, '../../script/commands.json'));
   if (!existsSync(source)) throw new Error(`command script not found: ${source}`);
   const raw = JSON.parse(readFileSync(source, 'utf8'));
   if (raw.schema_version !== 1) throw new Error(`${source}: unsupported schema_version ${raw.schema_version}`);
-  const override = process.env.HART_PROMPT;
-  const prompt = override ? { text: override, regex: `(^|\\n)${escapeRegex(override)}$` } : raw.prompt;
   return {
     source,
-    prompt,
-    banner: override ? null : (raw.banner ?? null),
+    prompt: raw.prompt,
+    banner: raw.banner,
     enter: raw.enter,
     terminal: raw.terminal,
     bootTimeoutMs: Number(process.env.HART_BOOT_TIMEOUT_MS ?? raw.boot_timeout_seconds * 1000),

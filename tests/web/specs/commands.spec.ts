@@ -19,9 +19,7 @@ test('boots to a shell and runs the command script', async ({ page, baseURL, bro
   const info = await pageInfo(page);
   console.log(`${testInfo.project.name}: prompt after ${(bootMs / 1000).toFixed(2)} s (${info.backend}, ${info.guest}); script ${script.source}`);
 
-  if (script.banner !== null) {
-    expect(await bootText(page), 'banner on the line before the first prompt').toContain(`${script.banner}\n${script.prompt.text}`);
-  }
+  expect(await bootText(page), 'banner on the line before the first prompt').toContain(`${script.banner}\n${script.prompt.text}`);
 
   const results: { id: string; input: string; pass: boolean; output: string; failures: string[] }[] = [];
   try {
