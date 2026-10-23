@@ -88,7 +88,7 @@ generated sets on every run.
 ## Configuration review map
 
 Upstream differences: `diff -ru $ACT4_HOME/riscv-arch-test/config/sail/sail-RVA20S64 tests/act4/config/hart-rv64gc`.
-"IC" is `docs/implementation-choices.md`; line numbers are at commit 9699d7b. Values not
+"IC" is `docs/implementation-choices.md`; line numbers are at commit 2cfefda. Values not
 listed are unchanged from sail-RVA20S64 and either match hart (shown) or do not apply to an
 extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all disabled).
 
@@ -130,7 +130,7 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `MCOUNTENABLE_EN`, `SCOUNTENABLE_EN` | all 32 | IC L45 |
 | `HPM_COUNTER_EN` | all false (**changed**); `HPM_COUNTERn_WIDTH` and `HPM_EVENTS` removed because UDB defines them only for enabled counters | IC L43 |
 | `MCOUNTINHIBIT_IMPLEMENTED` true; `COUNTINHIBIT_EN` CY, IR, HPM3–31 (not TM) | | IC L42 |
-| `WFI_U_MODE` false; `WFI_FINITE` true | | IC L67; IC L135 (test profile: a WFI that nothing could wake completes) |
+| `WFI_U_MODE` false; `WFI_FINITE` true | | IC L67; IC L136 (test profile: a WFI that nothing could wake completes) |
 | `TRAP_ON_ILLEGAL_WLRL` false | | IC L27 (`mcause` stores any value) |
 | `TRAP_ON_UNIMPLEMENTED_CSR`, `TRAP_ON_UNIMPLEMENTED_INSTRUCTION`, `TRAP_ON_RESERVED_INSTRUCTION` | true | IC L34; Sail `Ssstrict` |
 | `MARCHID_IMPLEMENTED`, `MIMPID_IMPLEMENTED` | false (**changed**; `ARCH_ID_VALUE`, `IMP_ID_VALUE` removed); `VENDOR_ID_BANK`/`OFFSET` 0 | IC L14: 0/0/0 by default; `hart --elf` uses the default `CpuConfig` (`Board::new_test`) |
@@ -159,13 +159,13 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `memory.asidlen` | 16 | IC L74 |
 | `memory.pmp` | 16 entries, all usable, grain 0, TOR/NA4/NAPOT | IC L83, L85 |
 | `memory.misaligned.exceptions` | scalar loads/stores none; AMO and LR/SC AccessFault | IC L62, L64 |
-| `memory.regions` RAM | 0x8000_0000, 2 GiB, main memory | IC L135 (test profile RAM, 2 GiB default) and `link.ld` |
-| `memory.regions` MMIO | 0x0200_0000–0x1200_0000, misaligned scalar access AccessFault (**changed**) | IC L120, L63 |
-| `memory.regions` ROM | **removed** | `hart --elf` has nothing at 0x1000 (IC L135) |
+| `memory.regions` RAM | 0x8000_0000, 2 GiB, main memory | IC L136 (test profile RAM, 2 GiB default) and `link.ld` |
+| `memory.regions` MMIO | 0x0200_0000–0x1200_0000, misaligned scalar access AccessFault (**changed**) | IC L120, L63 (within a page; see limits below for page-crossing accesses) |
+| `memory.regions` ROM | **removed** | `hart --elf` has nothing at 0x1000 (IC L136) |
 | `platform.vendorid/archid/impid/hartid` | 0 | IC L14, L15 |
 | `platform.reservation` | 8-byte set, `require_exact_reservation_addr` true (**changed**), `invalidate_on_same_hart_store` false | IC L65 |
 | `platform.clint` | base 0x0200_0000 | IC L125 |
-| `platform.simple_interrupt_generator` | base 0x0C00_0000 | IC L136 |
+| `platform.simple_interrupt_generator` | base 0x0C00_0000 | IC L137 |
 | `platform.interrupts`, `extensions.S.interrupts` | all supported | IC L30–31 |
 | `platform.clock_frequency` | 10 MHz (**changed**) | IC L123 |
 | `platform.instructions_per_tick` | 1 (**changed**) | Sail increments `mcycle` once per tick, so 1 models IC L40 (CPI 1); hart runs with `--timebase insns:1` (IC L123) so `mtime` matches too |
@@ -178,13 +178,13 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 
 | Item | Choice | hart source |
 | --- | --- | --- |
-| `RVMODEL_HALT_PASS/FAIL` | One 64-bit `sd` of 1 (pass) or 3 (fail) to `tohost`, after `tohost` reads 0 | IC L134: HTIF polled between batches; device 0 exit code `payload >> 1` |
-| `RVMODEL_IO_WRITE_STR` | Per byte: wait until `tohost` reads 0, then one `sd` of `(0x0101 << 48) \| byte` | IC L134: device 1 command 1. hart clears `tohost` only when it polls, so without the wait, back-to-back bytes would overwrite each other |
+| `RVMODEL_HALT_PASS/FAIL` | One 64-bit `sd` of 1 (pass) or 3 (fail) to `tohost`, after `tohost` reads 0 | IC L135: HTIF polled between batches; device 0 exit code `payload >> 1` |
+| `RVMODEL_IO_WRITE_STR` | Per byte: wait until `tohost` reads 0, then one `sd` of `(0x0101 << 48) \| byte` | IC L135: device 1 command 1. hart clears `tohost` only when it polls, so without the wait, back-to-back bytes would overwrite each other |
 | `RVMODEL_ACCESS_FAULT_ADDRESS` | 0 | IC L119: address 0 unmapped |
 | `RVMODEL_MTIME_ADDRESS`, `RVMODEL_MTIMECMP_ADDRESS`, `RVMODEL_MSIP_ADDRESS` | 0x0200_BFF8, 0x0200_4000, 0x0200_0000 | IC L125 |
-| `RVMODEL_SET/CLR_MEXT/SEXT/SSW_INT` | SIG PLATFORM register (+4): bit 31 = level, bits 11/9/1 | IC L136 |
-| `RVMODEL_MAX_CYCLES_PER_TIMER_TICK` 1, `RVMODEL_TIMER_INT_SOON_DELAY` 20000, `RVMODEL_INTERRUPT_LATENCY` 10 | | One tick per instruction (above). hart updates `mtime`, and so MTIP, between batches of at most 10,000 instructions (`BATCH` in `crates/hart-core/src/board.rs`), so the timer idle loop (about 40,000 instructions) covers the delay plus one batch. SIG and CLINT writes reach `mip` at once, and interrupts are polled before every instruction (IC L97) |
-| `link.ld` | unchanged: RAM 0x8000_0000, 2 GiB | IC L135 |
+| `RVMODEL_SET/CLR_MEXT/SEXT/SSW_INT` | SIG PLATFORM register (+4): bit 31 = level, bits 11/9/1 | IC L137 |
+| `RVMODEL_MAX_CYCLES_PER_TIMER_TICK` 1, `RVMODEL_TIMER_INT_SOON_DELAY` 20000, `RVMODEL_INTERRUPT_LATENCY` 10 | | One tick per instruction (above). IC L97: `mtime` and device lines change only during device accesses or between run batches, which are at most 10,000 instructions (`BATCH` in `crates/hart-core/src/board.rs`), so the timer idle loop (about 40,000 instructions) covers the delay plus one batch. SIG and CLINT writes take effect at the access, and the CPU polls after every device access (IC L97) |
+| `link.ld` | unchanged: RAM 0x8000_0000, 2 GiB | IC L136 |
 
 The same macros, linker script, and `sail.json` are used for the Sail run that computes the
 expected results and for the ELFs that run on hart.
@@ -202,6 +202,8 @@ Sail has no option for a few hart choices. Each is listed with how it is handled
   `max_time_to_wait` ticks. Both are allowed by the specification.
 - **Misaligned store that faults on its second page** (IC L62): hart writes no bytes; Sail
   splits the access.
+- **Misaligned device access that crosses a page** (IC L63): hart splits it into byte
+  accesses; Sail's MMIO region raises an access fault for every misaligned access.
 
 If a generated test exercises one of these differences, it fails on hart, and the failure is
 reported and resolved like any other: hart changes, or this configuration changes if Sail
