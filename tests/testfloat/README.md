@@ -12,7 +12,7 @@ into hart.
 ```sh
 tests/testfloat/build.sh          # once: fetch, build, install testfloat_gen (~30 s)
 tests/testfloat/run.sh            # level 1: every function x every rounding mode (~1 min)
-tests/testfloat/run.sh --level 2  # level 2: core operations x every rounding mode
+tests/testfloat/run.sh --level 2  # level 2: core operations x every rounding mode (see below)
 ```
 
 `run.sh` builds `hart-testfloat` in release mode, then runs it. Each run prints one row per
@@ -76,6 +76,33 @@ match the `mulAdd` vector exactly.
 Level 2 defaults to the core operations: add, sub, mul, div, sqrt, and mulAdd, in both formats.
 Name functions to check others.
 
+### Level 2 sizes and capped runs
+
+TestFloat's level 2 generates `2·N²` cases for two-operand functions and `2·N³` for
+three-operand ones, where N is 1936 for binary32 and 4488 for binary64:
+
+| Function (per rounding mode) | Level 2 vectors | Time on one core |
+| --- | ---: | ---: |
+| `f32_add`, `sub`, `mul`, `div` | 7,496,192 | ~6 s |
+| `f64_add`, `sub`, `mul`, `div` | 40,284,288 | ~30 s |
+| `f32_sqrt` / `f64_sqrt` | 8,800 / 26,112 | <1 s |
+| `f32_mulAdd` | 14,512,627,712 | ~3 h |
+| `f64_mulAdd` | 180,795,884,544 | ~37 h |
+
+`testfloat_gen -n` can only raise a level's case count, not lower it. For the large mulAdd
+runs, `--n COUNT` runs `testfloat_gen -forever` (level 2 generation, deterministic for a
+given seed) and checks the first COUNT vectors. Level 2 alternates fully random operand triples
+with an ordered sweep of special and boundary values, so a prefix has random coverage of the
+whole space and a full sweep over the leading values of `a`. `--seed S` changes the random
+half.
+
+```sh
+tests/testfloat/run.sh --level 2 --rounding all f32_add f32_sub f32_mul f32_div f32_sqrt \
+    f64_add f64_sub f64_mul f64_div f64_sqrt              # full level 2, ~2 min on 4 cores
+tests/testfloat/run.sh --level 2 --rounding rne f32_mulAdd        # full level 2, ~3 h
+tests/testfloat/run.sh --n 2000000000 --rounding rne f64_mulAdd   # capped, ~25 min
+```
+
 Not covered by TestFloat: `fmin`/`fmax`, `fclass`, sign injection, and the `fmv` moves.
 The unit tests in `crates/hart-core/src/softfloat/tests.rs`, riscv-tests rv64uf/rv64ud, and
 ACT4 cover those.
@@ -83,14 +110,15 @@ ACT4 cover those.
 ## Commands
 
 ```text
-hart-testfloat run [--level N] [--jobs N] [--rm LIST] [--gen PATH] [--show N] [FUNCTION...]
+hart-testfloat run [--level N] [--n COUNT] [--seed S] [--jobs N] [--rounding LIST] [--gen PATH] [--show N] [FUNCTION...]
 hart-testfloat check FUNCTION RM [--show N] < vectors
 hart-testfloat list
 ```
 
 - `run` spawns `testfloat_gen` for every selected function and rounding mode (in parallel,
-  `--jobs` defaults to the CPU count) and checks its output. `--rm` takes a comma-separated
-  list or `all`. `--gen` (or `TESTFLOAT_GEN`) overrides the `testfloat_gen` path.
+  `--jobs` defaults to the CPU count) and checks its output. `--rounding` takes a
+  comma-separated list or `all` (the default). `--n` and `--seed` select capped level 2
+  runs (above). `--gen` (or `TESTFLOAT_GEN`) overrides the `testfloat_gen` path.
 - `check` reads vectors from stdin, for example:
 
   ```sh

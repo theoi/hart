@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runs hart's soft-float library against TestFloat vectors. Arguments go to
 # `hart-testfloat run`; see README.md. Examples:
-#   tests/testfloat/run.sh                      # level 1, every function and rounding mode
-#   tests/testfloat/run.sh --level 2            # level 2, core operations, every rounding mode
-#   tests/testfloat/run.sh --rm rne f64_mulAdd  # one function, one mode
+#   tests/testfloat/run.sh                              # level 1, every function and rounding mode
+#   tests/testfloat/run.sh --level 2 f64_add            # level 2, every rounding mode
+#   tests/testfloat/run.sh --rounding rne f64_mulAdd     # one function, one mode
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

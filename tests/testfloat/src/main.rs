@@ -7,7 +7,7 @@
 //! for bit.
 //!
 //! ```text
-//! hart-testfloat run [--level N] [--jobs N] [--rm LIST] [--gen PATH] [--show N] [FUNCTION...]
+//! hart-testfloat run [--level N] [--n COUNT] [--seed S] [--jobs N] [--rounding LIST] [--gen PATH] [--show N] [FUNCTION...]
 //! hart-testfloat check FUNCTION RM [--show N] < vectors
 //! hart-testfloat list
 //! ```
@@ -166,12 +166,19 @@ fn hex(v: u64, bits: u32) -> String {
 }
 
 /// Checks every vector read from `input` against `func` in rounding mode `rm`.
-fn check_stream(func: &Func, rm: RoundingMode, input: impl Read, show: usize) -> Result<Outcome, String> {
+/// Stops after `limit` vectors when it is set.
+fn check_stream(
+    func: &Func,
+    rm: RoundingMode,
+    input: impl Read,
+    show: usize,
+    limit: Option<u64>,
+) -> Result<Outcome, String> {
     let mut reader = BufReader::with_capacity(1 << 20, input);
     let mut line = Vec::with_capacity(128);
     let mut out = Outcome::default();
     let mask = if func.result_bits == 64 { u64::MAX } else { (1u64 << func.result_bits) - 1 };
-    loop {
+    while limit.is_none_or(|l| out.cases < l) {
         line.clear();
         let n = reader.read_until(b'\n', &mut line).map_err(|e| format!("read error: {e}"))?;
         if n == 0 {
@@ -223,29 +230,47 @@ fn check_stream(func: &Func, rm: RoundingMode, input: impl Read, show: usize) ->
     Ok(out)
 }
 
-/// Runs `testfloat_gen` for one function and rounding mode and checks its output.
-fn run_one(
-    gen: &str,
+/// Options passed through to `testfloat_gen`.
+struct GenOptions {
+    path: String,
     level: u32,
-    func: &Func,
-    rm: &(&str, &str, RoundingMode),
-    show: usize,
-) -> Result<Outcome, String> {
-    let mut child = Command::new(gen)
-        .args(["-level", &level.to_string(), rm.1, "-tininessafter", "-exact", func.source])
+    /// Stop after this many vectors of `-forever` (level 2) generation.
+    count: Option<u64>,
+    /// `-seed`: seed for the random half of the cases.
+    seed: Option<u64>,
+}
+
+/// Runs `testfloat_gen` for one function and rounding mode and checks its output.
+fn run_one(gen: &GenOptions, func: &Func, rm: &(&str, &str, RoundingMode), show: usize) -> Result<Outcome, String> {
+    // testfloat_gen's own -n can only raise the count above a level's minimum, so a
+    // capped run uses -forever (level 2 generation) and stops reading after `count`.
+    let mut args = match gen.count {
+        Some(_) => vec!["-forever".to_string()],
+        None => vec!["-level".to_string(), gen.level.to_string()],
+    };
+    if let Some(s) = gen.seed {
+        args.extend(["-seed".to_string(), s.to_string()]);
+    }
+    args.extend([rm.1, "-tininessafter", "-exact", func.source].map(String::from));
+    let path = gen.path.as_str();
+    let mut child = Command::new(path)
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("cannot run {gen}: {e}"))?;
+        .map_err(|e| format!("cannot run {path}: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
-    let result = check_stream(func, rm.2, stdout, show);
-    let output = child.wait_with_output().map_err(|e| format!("{gen}: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("{gen} failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
+    let result = check_stream(func, rm.2, stdout, show, gen.count);
+    if gen.count.is_some() {
+        let _ = child.kill();
+    }
+    let output = child.wait_with_output().map_err(|e| format!("{path}: {e}"))?;
+    if gen.count.is_none() && !output.status.success() {
+        return Err(format!("{path} failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
     }
     let outcome = result?;
-    if outcome.cases == 0 {
-        return Err(format!("{gen} produced no vectors for {}", func.source));
+    if outcome.cases == 0 || gen.count.is_some_and(|n| outcome.cases != n) {
+        return Err(format!("{path} produced only {} vectors for {}", outcome.cases, func.source));
     }
     Ok(outcome)
 }
@@ -257,7 +282,7 @@ fn default_gen() -> String {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  hart-testfloat run [--level N] [--jobs N] [--rm LIST] [--gen PATH] [--show N] [FUNCTION...]\n  \
+        "usage:\n  hart-testfloat run [--level N] [--n COUNT] [--seed S] [--jobs N] [--rounding LIST] [--gen PATH] [--show N] [FUNCTION...]\n  \
          hart-testfloat check FUNCTION RM [--show N] < vectors\n  hart-testfloat list\n\n\
          RM is one of rne, rtz, rdn, rup, rmm; LIST is a comma-separated list of them or `all`."
     );
@@ -270,6 +295,8 @@ fn cmd_run(args: &[String]) -> ExitCode {
     let mut rms: Vec<&'static (&str, &str, RoundingMode)> = ROUNDINGS.iter().collect();
     let mut gen = default_gen();
     let mut show = 5usize;
+    let mut count: Option<u64> = None;
+    let mut seed: Option<u64> = None;
     let mut names: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -289,6 +316,14 @@ fn cmd_run(args: &[String]) -> ExitCode {
                 Some(v) if v > 0 => jobs = v,
                 _ => return usage(),
             },
+            "--n" => match value("--n").and_then(|v| v.parse().ok()) {
+                Some(v) if v > 0 => count = Some(v),
+                _ => return usage(),
+            },
+            "--seed" => match value("--seed").and_then(|v| v.parse().ok()) {
+                Some(v) => seed = Some(v),
+                None => return usage(),
+            },
             "--show" => match value("--show").and_then(|v| v.parse().ok()) {
                 Some(v) => show = v,
                 None => return usage(),
@@ -297,8 +332,8 @@ fn cmd_run(args: &[String]) -> ExitCode {
                 Some(v) => gen = v,
                 None => return usage(),
             },
-            "--rm" => {
-                let Some(list) = value("--rm") else { return usage() };
+            "--rounding" | "--rm" => {
+                let Some(list) = value("--rounding") else { return usage() };
                 if list == "all" {
                     rms = ROUNDINGS.iter().collect();
                 } else {
@@ -341,6 +376,7 @@ fn cmd_run(args: &[String]) -> ExitCode {
         v
     };
 
+    let gen = GenOptions { path: gen, level, count, seed };
     let tasks: Vec<(&Func, &(&str, &str, RoundingMode))> =
         funcs.iter().flat_map(|f| rms.iter().map(move |r| (*f, *r))).collect();
     let next = AtomicUsize::new(0);
@@ -350,7 +386,7 @@ fn cmd_run(args: &[String]) -> ExitCode {
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(&(func, rm)) = tasks.get(i) else { break };
-                let r = run_one(&gen, level, func, rm, show);
+                let r = run_one(&gen, func, rm, show);
                 results.lock().unwrap()[i] = Some(r);
             });
         }
@@ -361,7 +397,14 @@ fn cmd_run(args: &[String]) -> ExitCode {
     let mut total_cases = 0u64;
     let mut total_mismatches = 0u64;
     let mut errors = 0usize;
-    let _ = writeln!(stdout, "TestFloat level {level}, testfloat_gen: {gen}");
+    let mut mode = match count {
+        Some(n) => format!("level 2 (-forever, first {n} vectors per run)"),
+        None => format!("level {level}"),
+    };
+    if let Some(s) = seed {
+        mode.push_str(&format!(", -seed {s}"));
+    }
+    let _ = writeln!(stdout, "TestFloat {mode}, testfloat_gen: {}", gen.path);
     let _ = writeln!(stdout, "{:<12} {:<4} {:>12} {:>10}", "function", "rm", "vectors", "mismatches");
     for ((func, rm), r) in tasks.iter().zip(results) {
         match r.expect("every task ran") {
@@ -414,7 +457,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         eprintln!("unknown rounding mode {rm}");
         return usage();
     };
-    match check_stream(func, rm.2, std::io::stdin().lock(), show) {
+    match check_stream(func, rm.2, std::io::stdin().lock(), show, None) {
         Ok(o) => {
             println!("{} {}: {} vectors, {} mismatches", func.name, rm.0, o.cases, o.mismatches);
             for s in &o.samples {
