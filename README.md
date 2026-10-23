@@ -86,8 +86,10 @@ npm run preview                         # serve it at http://localhost:4173/
 | [`crates/hart-cli`](crates/hart-cli) | The native `hart` command. |
 | [`crates/hart-web`](crates/hart-web) | The wasm-bindgen wrapper the web demo uses. |
 | [`web`](web) | The demo site (TypeScript, Vite, xterm.js). |
+| [`guest`](guest) | The guest image build: a Buildroot external tree and `build.sh`, which builds OpenSBI, Linux, and the BusyBox root filesystem from pinned sources. |
 | [`docs`](docs) | Architecture and implementation choices. |
 | [`tests/riscv-tests`](tests/riscv-tests) | Build script and runner for riscv-tests. |
+| [`tests/act4`](tests/act4) | hart's configuration and runner for the RISC-V Architectural Tests (ACT4). |
 | [`tests/testfloat`](tests/testfloat) | Soft-float conformance against Berkeley TestFloat. |
 | [`tests/diff`](tests/diff) | Differential testing against Spike: commit-log comparator and lockstep profile. |
 | [`tests/boot`](tests/boot) | Native boot acceptance test. |
@@ -95,8 +97,6 @@ npm run preview                         # serve it at http://localhost:4173/
 | [`tests/script`](tests/script) | The command script that the boot and browser tests type into the guest. |
 | [`tests/bench`](tests/bench) | Boot speed benchmark. |
 | [`.github/workflows`](.github/workflows) | CI and the GitHub Pages deployment. |
-
-<!-- TODO: add guest/ (guest image build) and tests/act4 (ACT4 config and runner) when they land. -->
 
 ## Architecture
 
@@ -142,17 +142,29 @@ gcc-riscv64-unknown-elf`) and `autoconf`. The Spike and browser instructions are
 
 ## Guest software
 
-The guest images contain unmodified upstream software, built from source with a pinned
-Buildroot release: OpenSBI (generic platform, `fw_jump`), a Linux LTS kernel, BusyBox, and
-the musl C library, plus a small Mandelbrot renderer that exercises the FPU.
-<!-- RESULT: exact versions of Buildroot, OpenSBI, Linux, BusyBox, and musl -->
+The guest images contain unmodified upstream software. [`guest/build.sh`](guest/README.md)
+builds them from pinned source releases with Buildroot 2026.08.1 and applies no source
+patches:
 
-The images, their checksums, and the complete corresponding source with license notices are
-published as assets of the
-[`guest-v1` release](https://github.com/theoi/hart/releases/tag/guest-v1).
-<!-- RESULT: direct link to the guest-v1 source bundle and license notices -->
-Each component keeps its own license: Linux and BusyBox are GPL-2.0, musl is MIT, and
-OpenSBI is BSD-2-Clause. hart's license below does not cover the guest software.
+| Component | Version | License |
+| --- | --- | --- |
+| OpenSBI (`generic` platform, `fw_jump`) | 1.8.1 | BSD-2-Clause |
+| Linux | 6.18.55 (6.18 LTS) | GPL-2.0 with Linux-syscall-note |
+| BusyBox | 1.38.0 | GPL-2.0 |
+| musl | 1.2.6 | MIT |
+| GCC runtime (libgcc) | 15.3.0 | GPL-3.0 with the GCC Runtime Library Exception |
+
+The root filesystem also holds `mandelbrot`, a small demo that renders the Mandelbrot set in
+double precision to exercise the FPU (MIT OR Apache-2.0).
+[`guest/README.md`](guest/README.md) explains every configuration choice and lists all
+licenses.
+
+The [`guest-v1` release](https://github.com/theoi/hart/releases/tag/guest-v1) holds the
+images, their checksums, and
+[`legal-info.tar`](https://github.com/theoi/hart/releases/download/guest-v1/legal-info.tar)
+(346 MB). That bundle has the complete corresponding source and license texts for everything
+in the images, plus Buildroot itself and the build scripts. hart's license below does not
+cover the guest software.
 
 ## License
 
