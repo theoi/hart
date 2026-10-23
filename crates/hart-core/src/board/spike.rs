@@ -88,6 +88,11 @@ impl Device for BootRom {
     fn any_alignment(&self) -> bool {
         true
     }
+
+    // The hart starts here, as in Spike.
+    fn executable(&self) -> bool {
+        true
+    }
 }
 
 const PLIC_NUM_IDS: u32 = 32;

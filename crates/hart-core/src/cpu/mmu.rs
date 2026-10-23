@@ -262,7 +262,11 @@ fn walk(cpu: &mut Cpu, bus: &mut Bus, vaddr: u64, access: Access, mode: Priv) ->
         if !cpu.pmp.check(pte_addr, 8, Access::Load, Priv::Supervisor) {
             return Err(access.access_fault(vaddr));
         }
-        let pte = bus.read(pte_addr, 8).map_err(|_| access.access_fault(vaddr))?;
+        // Page tables must be in RAM; a PTE address elsewhere is a PMA access fault.
+        let Some(off) = bus.ram.offset(pte_addr, 8) else {
+            return Err(access.access_fault(vaddr));
+        };
+        let pte = bus.ram.read_at(off, 8);
         if pte & PTE_V == 0 || (pte & PTE_R == 0 && pte & PTE_W != 0) || pte & PTE_RESERVED != 0 {
             return Err(access.page_fault(vaddr));
         }

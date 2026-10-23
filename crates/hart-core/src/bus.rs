@@ -23,6 +23,11 @@ pub trait Device: Any {
     fn any_alignment(&self) -> bool {
         false
     }
+    /// Whether instructions may be fetched from the device (a ROM). A fetch from any
+    /// other device raises an instruction access fault.
+    fn executable(&self) -> bool {
+        false
+    }
     /// Called by the board's run loop between instruction batches, after `wires.mtime`
     /// has been advanced. Devices update interrupt lines here.
     fn tick(&mut self, _wires: &mut Wires) {}
@@ -318,6 +323,16 @@ impl Bus {
     #[inline]
     pub fn is_ram(&self, paddr: u64, len: u64) -> bool {
         self.ram.offset(paddr, len).is_some()
+    }
+
+    /// True if instructions can be fetched from `[paddr, paddr+len)`: it is RAM, or lies
+    /// in one device marked [`Device::executable`].
+    pub fn is_executable(&self, paddr: u64, len: u64) -> bool {
+        self.is_ram(paddr, len)
+            || self.regions.iter().any(|r| {
+                let off = paddr.wrapping_sub(r.base);
+                off < r.size && len <= r.size - off && r.dev.executable()
+            })
     }
 
     /// True if any byte at `paddr` is backed by RAM or a device.

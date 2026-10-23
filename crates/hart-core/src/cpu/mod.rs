@@ -720,4 +720,54 @@ mod tests {
         assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
         assert_eq!((cpu.csr.mcause, cpu.csr.mepc, cpu.csr.mtval), (1, RAM + 0x106, RAM + 0x108));
     }
+
+    /// A device that reads as `nop`s.
+    struct Nops {
+        executable: bool,
+    }
+
+    impl crate::bus::Device for Nops {
+        fn read(&mut self, off: u64, size: u8, _: &mut crate::irq::Wires) -> Result<u64, crate::bus::BusFault> {
+            let word = 0x0000_0013_0000_0013u64;
+            Ok((word >> (8 * (off & 7))) & (u64::MAX >> (64 - 8 * u32::from(size))))
+        }
+        fn write(&mut self, _: u64, _: u8, _: u64, _: &mut crate::irq::Wires) -> Result<(), crate::bus::BusFault> {
+            Ok(())
+        }
+        fn executable(&self) -> bool {
+            self.executable
+        }
+    }
+
+    #[test]
+    fn fetch_from_a_device_needs_the_executable_attribute() {
+        let (mut cpu, mut bus) = machine(&[]);
+        bus.add_device(0x1000, 0x100, Box::new(Nops { executable: false }));
+        bus.add_device(0x2000, 0x100, Box::new(Nops { executable: true }));
+        cpu.pc = 0x1000;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
+        assert_eq!((cpu.csr.mcause, cpu.csr.mtval), (1, 0x1000));
+        cpu.pc = 0x2000;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Retired));
+        assert_eq!(cpu.pc, 0x2004);
+    }
+
+    #[test]
+    fn amos_and_page_table_walks_need_ram() {
+        // amoadd.w x5, x6, (x10) on a device
+        let (mut cpu, mut bus) = machine(&[0x0065_22af]);
+        bus.add_device(0x1000, 0x1000, Box::new(Nops { executable: false }));
+        cpu.x[10] = 0x1000;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
+        assert_eq!((cpu.csr.mcause, cpu.csr.mtval), (7, 0x1000));
+        // S-mode Sv39 with the root page table on the device: the fetch's walk faults
+        // with an instruction access fault.
+        csr::write(&mut cpu, &bus, csr::PMPADDR0, (1 << 54) - 1, 0).unwrap();
+        csr::write(&mut cpu, &bus, csr::PMPCFG0, 0x1f, 0).unwrap();
+        cpu.mode = Priv::Supervisor;
+        cpu.csr.satp = (csr::SATP_MODE_SV39 << 60) | 1;
+        cpu.pc = RAM;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
+        assert_eq!((cpu.csr.mcause, cpu.csr.mtval), (1, RAM));
+    }
 }

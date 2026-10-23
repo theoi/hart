@@ -42,7 +42,7 @@ hart implements the RISC-V Instruction Set Manual, ratified release 20250508 (ta
 | `mie` | MSIE, MTIE, MEIE, SSIE, STIE, and SEIE are writable. |
 | `mip` | M-mode writes SSIP, STIP, and SEIP. `sip` writes SSIP only, when delegated. MSIP and MTIP come from the CLINT, MEIP from the PLIC. A read of SEIP returns the software bit ORed with the PLIC line. `csrrs`/`csrrc` on `mip`/`sip` modify only the software-writable bits. |
 | `menvcfg`, `senvcfg` | Only FIOM is writable (no Zicbo*, Svpbmt, Sstc, or Svadu). |
-| Debug triggers | Not implemented (no Sdtrig). `tselect`, `tdata1`–`tdata3`, and `tinfo` read 0 and ignore writes. `scontext` (32 bits) and `mcontext` (13 bits) are plain read/write registers, as in Spike with `--triggers=0`. |
+| Debug triggers | Sdtrig with zero triggers, as in Spike with `--triggers=0`: `tselect`, `tdata1`–`tdata3`, and `tinfo` exist, read 0, and ignore writes, so no trigger can be configured. `scontext` (32 bits) and `mcontext` (13 bits) are plain read/write registers. |
 | Unimplemented CSRs | Raise illegal instruction. |
 
 ## Counters
@@ -72,6 +72,7 @@ hart implements the RISC-V Instruction Set Manual, ratified release 20250508 (ta
 
 | Item | Choice |
 | --- | --- |
+| Physical memory attributes | RAM is the only main memory: readable, writable, executable, reservable (LR/SC), AMO-capable, any alignment (Zicclsm), and the only place page tables can live. Devices take loads and stores with natural alignment (unless a device accepts any alignment, like the lockstep profile's reset ROM). A fetch from a device raises an instruction access fault (1) unless the device is marked executable (`Device::executable`); the only one is the lockstep profile's reset ROM at `0x1000`. An AMO to a device raises a store/AMO access fault (7); LR and SC outside RAM fault as described below. A page-table walk whose PTE address is not RAM raises an access fault of the original access type (1 for a fetch, 5 for a load, 7 for a store or AMO), as Spike's walker does. These match the PMAs declared in the ACT4 Sail configuration. Spike itself also lets AMOs and fetches reach other devices. |
 | Physical addresses | 56 bits: the PPN in `satp` and in PTEs is 44 bits, and `pmpaddr` holds address bits 55:2. An address with no RAM or device behind it raises an access fault. |
 | Misaligned loads and stores | Supported in hardware for RAM (Zicclsm), including accesses that cross a page. Both pages are translated and PMP-checked before any byte is accessed. |
 | Misaligned access to a device region | Access fault when the access stays within one page. An access that crosses a page boundary is split into single-byte accesses after both pages are translated and checked. |
@@ -95,7 +96,7 @@ hart implements the RISC-V Instruction Set Manual, ratified release 20250508 (ta
 
 | Item | Choice |
 | --- | --- |
-| Entries | 16. `pmpcfg0` and `pmpcfg2` exist; odd `pmpcfg` CSRs raise illegal instruction. `pmpaddr16`–`63` and the upper `pmpcfg` registers read 0. |
+| Entries | 64 entries, of which 16 (0–15) are usable; entries 16–63 are read-only zero (`pmpaddr16`–`63` and the upper `pmpcfg` registers read 0 and ignore writes). `pmpcfg0` and `pmpcfg2` hold entries 0–15; odd `pmpcfg` CSRs raise illegal instruction. |
 | Reset | All entries off. The lockstep (Spike) profile (`CpuConfig::pmp_reset_all_access`) resets entry 0 to NAPOT over all memory with R, W, and X (`pmpcfg0` = 0x1f, `pmpaddr0` = 0x003fffffffffffff), as Spike does. |
 | Granularity | 4 bytes (G = 0). TOR, NA4, and NAPOT are supported. |
 | Reserved R=0, W=1 | The combination is reserved. hart stores R=0, W=0 and keeps X (and A and L) as written, as Spike does. Sail (`PMP_ClearPermissions`) also clears X. |
