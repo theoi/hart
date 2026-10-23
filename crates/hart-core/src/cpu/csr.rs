@@ -3,7 +3,7 @@
 
 use super::{fp, Cpu, Exception, Interrupt, Priv, Trap};
 use crate::bus::Bus;
-use crate::irq::HART_IRQ_MASK;
+use crate::irq::{bits, HART_IRQ_MASK};
 
 // ---- addresses ----
 pub const FFLAGS: u16 = 0x001;
@@ -183,10 +183,17 @@ impl CsrFile {
     }
 }
 
-/// `mip` as software sees it: software-writable bits OR device lines.
+/// `mip` as software sees it: software-writable bits OR device lines OR the test-only
+/// interrupt lines.
 #[inline]
 pub fn mip(cpu: &Cpu, bus: &Bus) -> u64 {
-    cpu.csr.mip | (bus.wires.hart_irq & HART_IRQ_MASK)
+    cpu.csr.mip | hw_mip(bus)
+}
+
+/// The `mip` bits driven by devices (including the test-only interrupt device).
+#[inline]
+fn hw_mip(bus: &Bus) -> u64 {
+    (bus.wires.hart_irq & HART_IRQ_MASK) | (bus.wires.test_irq & (HART_IRQ_MASK | bits::SSIP))
 }
 
 fn counter_allowed(cpu: &Cpu, bit: u32) -> bool {
@@ -235,7 +242,10 @@ pub fn read(cpu: &Cpu, bus: &Bus, addr: u16, insn: u32) -> Result<u64, Exception
             }
             c.satp
         }
-        MVENDORID | MARCHID | MIMPID | MHARTID | MCONFIGPTR => 0,
+        MVENDORID => cpu.config.mvendorid,
+        MARCHID => cpu.config.marchid,
+        MIMPID => cpu.config.mimpid,
+        MHARTID | MCONFIGPTR => 0,
         MSTATUS => c.read_mstatus(),
         MISA => MISA_VALUE,
         MEDELEG => c.medeleg,
@@ -262,7 +272,7 @@ pub fn read(cpu: &Cpu, bus: &Bus, addr: u16, insn: u32) -> Result<u64, Exception
 
 /// Write a CSR as an instruction in the current mode would. Read-only CSRs and
 /// insufficient privilege raise illegal instruction.
-pub fn write(cpu: &mut Cpu, addr: u16, value: u64, insn: u32) -> Result<(), Exception> {
+pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Result<(), Exception> {
     let illegal = Exception::illegal(insn);
     if (addr >> 8) & 3 > cpu.mode as u16 || addr >> 10 == 3 {
         return Err(illegal);
@@ -335,22 +345,46 @@ pub fn write(cpu: &mut Cpu, addr: u16, value: u64, insn: u32) -> Result<(), Exce
         _ => return Err(illegal),
     }
     if cpu.tracing() {
-        let logged = log_value(cpu, addr);
-        cpu.log_csr_write(logged.0, logged.1);
+        log_write(cpu, bus, addr);
     }
     Ok(())
 }
 
-/// The CSR and value to record in the commit log after a write to `addr`. Supervisor
-/// views of machine registers are logged as the machine register, like Spike.
+const MVIP: u16 = 0x309;
+
+/// Record the commit-log entries Spike produces for a write to `addr`.
+fn log_write(cpu: &mut Cpu, bus: &Bus, addr: u16) {
+    let c = &cpu.csr;
+    match addr {
+        SSTATUS | MSTATUS => {
+            let v = c.read_mstatus();
+            cpu.log_csr_write(MSTATUS, v);
+        }
+        SIE => {
+            let (sie, mie) = (c.mie & c.mideleg, c.mie);
+            cpu.log_csr_write(SIE, sie);
+            cpu.log_csr_write(MIE, mie);
+        }
+        SIP | MIP => {
+            // Spike keeps the software SEIP bit in mvip; its logged mip excludes it.
+            let mvip = c.mip & MIP_WMASK;
+            let mip = (c.mip & !bits::SEIP) | hw_mip(bus);
+            cpu.log_csr_write(MVIP, mvip);
+            cpu.log_csr_write(MIP, mip);
+        }
+        _ => {
+            let (a, v) = log_value(cpu, addr);
+            cpu.log_csr_write(a, v);
+        }
+    }
+}
+
+/// The value Spike logs after a write to `addr` (single-entry cases).
 fn log_value(cpu: &Cpu, addr: u16) -> (u16, u64) {
     let c = &cpu.csr;
     match addr {
-        SSTATUS | MSTATUS => (MSTATUS, c.read_mstatus()),
-        SIE => (MIE, c.mie),
-        SIP => (MIP, c.mip),
-        MCYCLE => (MCYCLE, c.mcycle.wrapping_add(1)),
-        MINSTRET => (MINSTRET, c.minstret.wrapping_add(1)),
+        MCYCLE => (MCYCLE, if c.mcountinhibit & 1 == 0 { c.mcycle.wrapping_add(1) } else { c.mcycle }),
+        MINSTRET => (MINSTRET, if c.mcountinhibit & 4 == 0 { c.minstret.wrapping_add(1) } else { c.minstret }),
         _ => {
             let v = match addr {
                 STVEC => c.stvec,
@@ -462,8 +496,8 @@ pub fn mret(cpu: &mut Cpu) {
     }
     cpu.pc = c.mepc;
     cpu.mode = mpp;
-    cpu.reservation = None;
-    cpu.mmu.flush();
+    let v = cpu.csr.read_mstatus();
+    cpu.log_csr_write(MSTATUS, v);
 }
 
 /// SRET. Caller has checked privilege and TSR.
@@ -478,8 +512,8 @@ pub fn sret(cpu: &mut Cpu) {
     }
     cpu.pc = c.sepc;
     cpu.mode = spp;
-    cpu.reservation = None;
-    cpu.mmu.flush();
+    let v = cpu.csr.read_mstatus();
+    cpu.log_csr_write(MSTATUS, v);
 }
 
 /// Name used in Spike commit logs (`c768_mstatus`).
@@ -521,6 +555,7 @@ pub fn name(addr: u16) -> &'static str {
         MCAUSE => "mcause",
         MTVAL => "mtval",
         MIP => "mip",
+        MVIP => "mvip",
         TSELECT => "tselect",
         TDATA1 => "tdata1",
         TDATA2 => "tdata2",

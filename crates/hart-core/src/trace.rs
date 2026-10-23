@@ -11,7 +11,7 @@
 //! Fields: privilege mode before the instruction, pc, instruction bits (4 hex digits for
 //! compressed), then register writes (`xN`, `fN`, `cADDR_name`), load addresses
 //! (`mem ADDR`), and store addresses with data (`mem ADDR DATA`, data width = store size).
-//! Memory addresses are physical. Traps produce no commit line; interrupts and exceptions
+//! Memory addresses are virtual, as in Spike. Traps produce no commit line; interrupts and exceptions
 //! are reported separately through [`TraceSink::trap`].
 
 use crate::cpu::{csr, Priv, Trap};

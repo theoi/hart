@@ -46,6 +46,26 @@ pub enum StepResult {
     Waiting,
 }
 
+/// Per-profile CPU settings.
+#[derive(Clone, Debug, Default)]
+pub struct CpuConfig {
+    pub mvendorid: u64,
+    pub marchid: u64,
+    pub mimpid: u64,
+    /// Spike-compatible interrupt polling for lockstep runs. Interrupts are taken only
+    /// when [`Cpu::irq_poll`] is set (the board sets it at chunk start; the CPU sets it
+    /// after every Zicsr instruction, MRET, and SRET) and immediately before every Zicsr
+    /// instruction. When false, interrupts are polled before every instruction.
+    pub lockstep_irq: bool,
+}
+
+impl CpuConfig {
+    /// Settings matching Spike, for differential testing.
+    pub fn spike() -> Self {
+        CpuConfig { mvendorid: 0, marchid: 5, mimpid: 0, lockstep_irq: true }
+    }
+}
+
 pub struct Cpu {
     /// Integer registers. `x[0]` is kept at zero.
     pub x: [u64; 32],
@@ -60,6 +80,11 @@ pub struct Cpu {
     pub reservation: Option<u64>,
     /// True while stalled in WFI.
     pub waiting: bool,
+    /// True if the instruction retired by the last `step` was WFI.
+    pub wfi_retired: bool,
+    /// Lockstep mode only: poll interrupts at the next step (see [`CpuConfig::lockstep_irq`]).
+    pub irq_poll: bool,
+    pub config: CpuConfig,
     tracer: Option<Box<dyn TraceSink>>,
     commit: Commit,
 }
@@ -77,6 +102,9 @@ impl Cpu {
             pmp: pmp::Pmp::new(),
             reservation: None,
             waiting: false,
+            wfi_retired: false,
+            irq_poll: false,
+            config: CpuConfig::default(),
             tracer: None,
             commit: Commit::default(),
         }
@@ -153,26 +181,82 @@ impl Cpu {
     // ---- memory access ----
 
     /// Translated, PMP-checked load of 1, 2, 4, or 8 bytes, zero-extended. Misaligned
-    /// addresses are supported.
+    /// addresses are supported, including accesses that cross a page boundary.
+    #[inline]
     pub fn load(&mut self, bus: &mut Bus, vaddr: u64, size: u8) -> Result<u64, Exception> {
-        let paddr = self.translate(bus, vaddr, size, Access::Load)?;
-        let v = bus.read(paddr, size).map_err(|_| Exception::new(ExceptionCause::LoadAccessFault, vaddr))?;
-        if self.tracing() {
-            self.commit.loads.push(paddr);
-        }
+        let v = if (vaddr & 0xfff) + size as u64 <= 0x1000 {
+            let paddr = self.translate(bus, vaddr, size, Access::Load)?;
+            bus.read(paddr, size).map_err(|_| Exception::new(ExceptionCause::LoadAccessFault, vaddr))?
+        } else {
+            self.load_split(bus, vaddr, size)?
+        };
+        self.log_load(vaddr);
         Ok(v)
     }
 
     /// Translated, PMP-checked store of the low `size` bytes of `value`. Misaligned
-    /// addresses are supported.
+    /// addresses are supported, including accesses that cross a page boundary.
+    #[inline]
     pub fn store(&mut self, bus: &mut Bus, vaddr: u64, size: u8, value: u64) -> Result<(), Exception> {
-        let paddr = self.translate(bus, vaddr, size, Access::Store)?;
-        bus.write(paddr, size, value).map_err(|_| Exception::new(ExceptionCause::StoreAccessFault, vaddr))?;
-        if self.tracing() {
-            self.commit.stores.push(MemWrite { addr: paddr, value, size });
+        if (vaddr & 0xfff) + size as u64 <= 0x1000 {
+            let paddr = self.translate(bus, vaddr, size, Access::Store)?;
+            bus.write(paddr, size, value).map_err(|_| Exception::new(ExceptionCause::StoreAccessFault, vaddr))?;
+        } else {
+            self.store_split(bus, vaddr, size, value)?;
+        }
+        self.log_store(vaddr, value, size);
+        Ok(())
+    }
+
+    /// A load that crosses a page boundary: translate both parts before reading.
+    #[cold]
+    fn load_split(&mut self, bus: &mut Bus, vaddr: u64, size: u8) -> Result<u64, Exception> {
+        let n1 = (0x1000 - (vaddr & 0xfff)) as u8;
+        let v2 = vaddr.wrapping_add(n1 as u64);
+        let p1 = self.translate(bus, vaddr, n1, Access::Load)?;
+        let p2 = self.translate(bus, v2, size - n1, Access::Load)?;
+        let mut v = 0u64;
+        for k in 0..size {
+            let (pa, va) = if k < n1 { (p1 + k as u64, vaddr) } else { (p2 + (k - n1) as u64, v2) };
+            let byte = bus.read(pa, 1).map_err(|_| Exception::new(ExceptionCause::LoadAccessFault, va))?;
+            v |= byte << (8 * k);
+        }
+        Ok(v)
+    }
+
+    #[cold]
+    fn store_split(&mut self, bus: &mut Bus, vaddr: u64, size: u8, value: u64) -> Result<(), Exception> {
+        let n1 = (0x1000 - (vaddr & 0xfff)) as u8;
+        let v2 = vaddr.wrapping_add(n1 as u64);
+        let p1 = self.translate(bus, vaddr, n1, Access::Store)?;
+        let p2 = self.translate(bus, v2, size - n1, Access::Store)?;
+        for k in 0..size {
+            let (pa, va) = if k < n1 { (p1 + k as u64, vaddr) } else { (p2 + (k - n1) as u64, v2) };
+            bus.write(pa, 1, value >> (8 * k)).map_err(|_| Exception::new(ExceptionCause::StoreAccessFault, va))?;
         }
         Ok(())
     }
+
+    /// Record a load address (virtual, as Spike logs it) in the commit log.
+    #[inline]
+    pub fn log_load(&mut self, vaddr: u64) {
+        if self.tracing() {
+            self.commit.loads.push(vaddr);
+        }
+    }
+
+    /// Record a store (virtual address, data, size) in the commit log.
+    #[inline]
+    pub fn log_store(&mut self, vaddr: u64, value: u64, size: u8) {
+        if self.tracing() {
+            let value = if size == 8 { value } else { value & ((1u64 << (8 * size)) - 1) };
+            self.commit.stores.push(MemWrite { addr: vaddr, value, size });
+        }
+    }
+
+    /// Drop any cached decoded instructions (FENCE.I).
+    #[inline]
+    pub fn flush_icache(&mut self) {}
 
     /// Virtual-to-physical translation for a data or fetch access (Sv39 + PMP).
     pub fn translate(&mut self, bus: &mut Bus, vaddr: u64, size: u8, access: Access) -> Result<u64, Exception> {
@@ -197,13 +281,29 @@ impl Cpu {
         retired
     }
 
+    /// Check for interrupts: wake from WFI on any locally enabled pending interrupt
+    /// (even if globally masked), and take the highest-priority enabled one.
+    #[inline]
+    fn poll_interrupts(&mut self, bus: &Bus) -> Option<Trap> {
+        if csr::mip(self, bus) & self.csr.mie == 0 {
+            return None;
+        }
+        self.waiting = false;
+        let irq = self.pending_interrupt(bus)?;
+        let trap = Trap::Interrupt(irq);
+        self.take_trap(trap, self.pc);
+        Some(trap)
+    }
+
     /// Take a pending interrupt or execute one instruction.
     pub fn step(&mut self, bus: &mut Bus) -> StepResult {
-        if let Some(irq) = self.pending_interrupt(bus) {
-            self.waiting = false;
-            let trap = Trap::Interrupt(irq);
-            self.take_trap(trap, self.pc);
-            return StepResult::Trapped(trap);
+        self.wfi_retired = false;
+        let lockstep = self.config.lockstep_irq;
+        if !lockstep || self.irq_poll {
+            self.irq_poll = false;
+            if let Some(trap) = self.poll_interrupts(bus) {
+                return StepResult::Trapped(trap);
+            }
         }
         if self.waiting {
             return StepResult::Waiting;
@@ -213,7 +313,29 @@ impl Cpu {
         if self.tracing() {
             self.commit.clear();
         }
-        match exec::step(self, bus) {
+        let result = exec::fetch(self, bus).and_then(|raw| {
+            let insn = decode::decode(raw);
+            // Spike serializes before every Zicsr instruction, which polls interrupts.
+            if lockstep && insn.op.is_csr() {
+                if let Some(trap) = self.poll_interrupts(bus) {
+                    return Ok(Err(trap));
+                }
+            }
+            exec::execute(self, bus, insn, raw)?;
+            match insn.op {
+                decode::Op::Wfi => self.wfi_retired = true,
+                decode::Op::Mret | decode::Op::Sret => self.irq_poll = true,
+                op if op.is_csr() => self.irq_poll = true,
+                _ => {}
+            }
+            Ok(Ok(raw))
+        });
+        let result = match result {
+            Ok(Err(trap)) => return StepResult::Trapped(trap),
+            Ok(Ok(raw)) => Ok(raw),
+            Err(e) => Err(e),
+        };
+        match result {
             Ok(insn) => {
                 self.csr.retire();
                 if self.tracing() {

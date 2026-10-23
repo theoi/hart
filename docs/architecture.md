@@ -63,6 +63,8 @@ Devices never hold references to the CPU or each other. Every device call gets
 
 - `hart_irq`: lines into the hart in `mip` layout. CLINT drives MSIP/MTIP, the PLIC drives
   MEIP/SEIP. The CPU ORs these into `mip`, so software sees `mip = csr.mip | hart_irq`.
+- `test_irq`: test-only interrupt lines (ACT4 trigger device) in `mip` layout; SSIP, MSIP,
+  SEIP, and MEIP are honored and ORed into `mip` separately from `hart_irq`.
 - `irq_sources`: PLIC input levels, bit `n` = source `n`. The UART raises its source; the
   PLIC reads the levels (on its own accesses and on `tick`) and drives MEIP/SEIP.
 - `mtime`: the machine timer. The `time` CSR reads it. The board's run loop advances it;
@@ -81,7 +83,13 @@ if cpu.waiting { /* fast-forward mtime to the next timer event */ }
 - `Cpu::step(&mut bus) -> StepResult` takes a pending interrupt or executes one instruction.
 - Interrupts are sampled before every instruction from `csr.mie`, `csr.mip`, and
   `bus.wires.hart_irq`, so a device line change takes effect on the next step.
-- Public state: `x`, `pc`, `mode`, `csr`, `fp`, `mmu`, `pmp`, `reservation`, `waiting`.
+- Public state: `x`, `pc`, `mode`, `csr`, `fp`, `mmu`, `pmp`, `reservation`, `waiting`,
+  `wfi_retired` (the last step retired a WFI), `irq_poll`, and `config: CpuConfig`.
+- Lockstep profile: `cpu.config = CpuConfig::spike()` sets marchid 5 and Spike-style
+  interrupt polling. Interrupts are then taken only when `cpu.irq_poll` is set (the board
+  sets it at each chunk start; the CPU sets it after every Zicsr instruction, MRET, and SRET)
+  and right before every Zicsr instruction. The board ends a chunk on `StepResult::Trapped`,
+  `StepResult::Waiting`, or `cpu.wfi_retired`, and clears `cpu.reservation` after each full chunk.
 - Memory helpers: `cpu.load(bus, vaddr, size)`, `cpu.store(bus, vaddr, size, value)`,
   `cpu.translate(bus, vaddr, size, access)`. They translate through Sv39, check PMP, support
   misaligned addresses, and record trace entries.
@@ -108,7 +116,7 @@ if cpu.waiting { /* fast-forward mtime to the next timer event */ }
 `cpu.set_tracer(Some(Box::new(SpikeCommitLog::new(writer))))` writes one line per retired
 instruction in Spike's `--log-commits` format: mode, pc, instruction bits, register writes
 (`xN`, `fN`, `cNNN_name`), load addresses, and store addresses with data. Addresses are
-physical. Custom sinks implement `TraceSink` (`commit` per instruction, `trap` per trap).
+virtual, as in Spike. Custom sinks implement `TraceSink` (`commit` per instruction, `trap` per trap).
 
 ## Branch and CI workflow
 

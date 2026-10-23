@@ -33,6 +33,10 @@ pub struct Wires {
     /// Hart interrupt lines driven by devices, in `mip` bit layout. CLINT drives MSIP and
     /// MTIP; the PLIC drives MEIP and SEIP. The CPU ORs these into `mip` on every read.
     pub hart_irq: u64,
+    /// Test-only interrupt lines (ACT4 interrupt-trigger device), in `mip` layout. SSIP,
+    /// MSIP, SEIP, and MEIP are honored; they are ORed into `mip` separately from
+    /// `hart_irq` so they never fight the CLINT or PLIC.
+    pub test_irq: u64,
     /// Interrupt source levels into the PLIC: bit `n` is source `n` (1..=63). Bit 0 is unused.
     pub irq_sources: u64,
     /// The machine timer (CLINT `mtime`), in timebase ticks. The `time` CSR reads this.
