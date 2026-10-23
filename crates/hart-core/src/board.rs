@@ -840,6 +840,7 @@ mod tests {
     fn console_queues_and_power_state() {
         let mut board = Board::new(BoardConfig::default(), &[0; 64], None, None).unwrap();
         assert_eq!(board.power_state(), PowerState::Running);
+        board.bus.write(UART_BASE + 1, 1, 1).unwrap();
         board.push_input(b"ls\n");
         assert_eq!(board.bus.read(UART_BASE + 5, 1).map(|lsr| lsr & 1), Ok(1));
         assert_eq!(board.bus.read(UART_BASE, 1), Ok(u64::from(b'l')));

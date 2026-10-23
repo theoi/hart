@@ -2,9 +2,16 @@
 //!
 //! Transmission is instantaneous: a byte written to THR goes straight to the
 //! output buffer and THR is empty again at once. Received bytes come from an
-//! unbounded host input queue, which also serves as the receive FIFO, so
-//! host input is never dropped (an FCR receive-FIFO reset does not discard
-//! it). Registers use `reg-shift = 0` and byte access.
+//! unbounded host input queue, so host input is never dropped (an FCR
+//! receive-FIFO reset does not discard it). Registers use `reg-shift = 0` and
+//! byte access.
+//!
+//! Host input enters the receive FIFO only while the receive-data interrupt
+//! (`IER.RDI`) is enabled; until then it waits in the host queue. Linux's 8250
+//! driver reads RBR twice while it opens the port, before it enables that
+//! interrupt, so on a real 16550 the first keys typed during boot are lost. A
+//! guest that polls LSR with `IER.RDI` clear therefore sees no host input.
+//! Loopback bytes go straight to the FIFO.
 //!
 //! The UART drives its PLIC source in [`Wires::irq_sources`] after every
 //! access and on [`Device::tick`] (call `tick` after [`Uart::push_input`]).
@@ -52,6 +59,8 @@ pub struct Uart {
     dll: u8,
     dlm: u8,
     thre_pending: bool,
+    /// Host input not yet moved to `rx` (see the module docs).
+    host: VecDeque<u8>,
     rx: VecDeque<u8>,
     tx: Vec<u8>,
 }
@@ -75,6 +84,7 @@ impl Uart {
             dll: 0,
             dlm: 0,
             thre_pending: false,
+            host: VecDeque::new(),
             rx: VecDeque::new(),
             tx: Vec::new(),
         }
@@ -82,12 +92,19 @@ impl Uart {
 
     /// Queues bytes typed by the host for the guest to receive.
     pub fn push_input(&mut self, bytes: &[u8]) {
-        self.rx.extend(bytes);
+        self.host.extend(bytes);
+        self.offer_input();
     }
 
     /// Bytes queued for the guest that it has not read yet.
     pub fn pending_input(&self) -> usize {
-        self.rx.len()
+        self.host.len() + self.rx.len()
+    }
+
+    fn offer_input(&mut self) {
+        if self.ier & IER_RDI != 0 {
+            self.rx.append(&mut self.host);
+        }
     }
 
     /// Bytes the guest has transmitted since the last drain.
@@ -200,6 +217,7 @@ impl Uart {
                     // disabling it drops any pending THRE interrupt.
                     self.thre_pending = self.ier & IER_THRI != 0;
                 }
+                self.offer_input();
             }
             2 => self.fifo_enabled = v & FCR_ENABLE_FIFO != 0,
             3 => self.lcr = v,
@@ -256,11 +274,11 @@ mod tests {
     #[test]
     fn receive_data_and_interrupt() {
         let mut u = Uart::default();
+        u.write_reg(IER, IER_RDI);
         assert_eq!(u.read_reg(LSR) & LSR_DR, 0);
+        assert!(!u.irq());
         u.push_input(b"ab");
         assert_eq!(u.read_reg(LSR) & LSR_DR, LSR_DR);
-        assert!(!u.irq());
-        u.write_reg(IER, IER_RDI);
         assert!(u.irq());
         assert_eq!(u.read_reg(IIR) & 0x0f, IIR_RDI);
         assert_eq!(u.read_reg(RBR), b'a');
@@ -334,9 +352,51 @@ mod tests {
     #[test]
     fn host_input_survives_fifo_reset() {
         let mut u = Uart::default();
+        u.write_reg(IER, IER_RDI);
         u.push_input(b"q");
         u.write_reg(IIR, 0x07);
         assert_eq!(u.read_reg(RBR), b'q');
+    }
+
+    #[test]
+    fn input_typed_before_the_port_opens_survives_8250_startup() {
+        let mut u = Uart::default();
+        u.push_input(b"sleep 1\r");
+        assert_eq!(u.read_reg(LSR) & LSR_DR, 0, "held until IER.RDI is enabled");
+        // serial8250_do_startup: clear the FIFOs, then read LSR, RX, IIR, MSR
+        // twice around the THRE and TXEN tests, then enable RLSI | RDI.
+        u.write_reg(IIR, 0x07);
+        u.write_reg(IIR, 0x00);
+        for _ in 0..2 {
+            for reg in [LSR, RBR, IIR, MSR] {
+                u.read_reg(reg);
+            }
+            u.write_reg(IER, IER_THRI);
+            u.read_reg(IIR);
+            u.write_reg(IER, 0);
+        }
+        u.write_reg(IER, IER_RDI | 0x04);
+        let mut got = Vec::new();
+        while u.read_reg(LSR) & LSR_DR != 0 {
+            got.push(u.read_reg(RBR));
+        }
+        assert_eq!(got, b"sleep 1\r");
+        assert_eq!(u.pending_input(), 0);
+    }
+
+    #[test]
+    fn input_waits_while_rdi_is_disabled() {
+        let mut u = Uart::default();
+        u.write_reg(IER, IER_RDI);
+        u.push_input(b"a");
+        // The 8250 console write path masks IER while it prints.
+        u.write_reg(IER, 0);
+        u.push_input(b"b");
+        assert_eq!(u.pending_input(), 2);
+        assert_eq!(u.read_reg(RBR), b'a', "bytes already in the FIFO stay readable");
+        assert_eq!(u.read_reg(LSR) & LSR_DR, 0);
+        u.write_reg(IER, IER_RDI);
+        assert_eq!(u.read_reg(RBR), b'b');
     }
 
     #[test]
