@@ -135,8 +135,10 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `TRAP_ON_UNIMPLEMENTED_CSR`, `TRAP_ON_UNIMPLEMENTED_INSTRUCTION`, `TRAP_ON_RESERVED_INSTRUCTION` | true | IC L34; Sail `Ssstrict` |
 | `MARCHID_IMPLEMENTED`, `MIMPID_IMPLEMENTED` | false (**changed**; `ARCH_ID_VALUE`, `IMP_ID_VALUE` removed); `VENDOR_ID_BANK`/`OFFSET` 0 | IC L14: 0/0/0 by default; `hart --elf` uses the default `CpuConfig` (`Board::new_test`) |
 | `CONFIG_PTR_ADDRESS` | 0 | IC L15 |
-| `MISALIGNED_LDST` true; `MISALIGNED_LDST_EXCEPTION_PRIORITY` low; `MISALIGNED_SPLIT_STRATEGY` sequential_bytes | | IC L62: no misaligned exceptions; the lowest faulting address is reported. hart checks both pages before writing anything; no generated test distinguishes this (see limits below) |
-| `NUM_PMP_ENTRIES` 16, `NUM_USABLE_PMP_ENTRIES` 16, `PMP_GRANULARITY` 2 (4 bytes), `PMP_TOR/NA4/NAPOT_SUPPORTED` true | | IC L83, L85 |
+| `MISALIGNED_LDST` true; `MISALIGNED_LDST_EXCEPTION_PRIORITY` low | | IC L62: no misaligned exceptions |
+| `MISALIGNED_SPLIT_STRATEGY` | custom (**changed** from sequential_bytes) | IC L62, L55: a misaligned access within one page is performed whole (see `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE`); for one that crosses a page, both pages are translated and PMP-checked before any byte is accessed, and a fault reports the address of the part that faults. UDB's other option, sequential_bytes, processes the bytes one at a time from the lowest address. At the pin, no ACT4 generator reads this parameter (only the PMPSm testplan mentions it), so it does not change the generated tests |
+| `NUM_PMP_ENTRIES` 64 (**changed** from 16); `NUM_USABLE_PMP_ENTRIES` 16 | | IC L83: 16 usable entries; `pmpaddr16`–`63` and the upper `pmpcfg` registers exist and read 0. In UDB, `NUM_PMP_ENTRIES` 16 would make those CSRs nonexistent (illegal instruction) |
+| `PMP_GRANULARITY` 2 (4 bytes), `PMP_TOR/NA4/NAPOT_SUPPORTED` true | | IC L83, L85 |
 | `PHYS_ADDR_WIDTH` | 56 | Not stated in IC; `pmpaddr` holds PA bits 55:2 (`crates/hart-core/src/cpu/pmp.rs`) |
 | `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE` | 4096 | IC L62: a misaligned RAM access within one page is one access: one translation and one PMP check over the whole range (a partial overlap faults, IC L89), with `xtval` = the start address (`load_slow`/`store_slow` in `crates/hart-core/src/cpu/mod.rs`). Matches the RAM region's 4 KiB misaligned atomicity granule in `sail.json` |
 | `PMA_GRANULARITY` | 3 (unchanged) | Not used for test selection or generation |
@@ -158,16 +160,17 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `base.reserved_behavior.fcsr_rm` | Fcsr_RM_Illegal (**changed** from Fatal) | IC L109: DYN with `frm` 5–7 raises illegal instruction |
 | `memory.physaddr_bits` | 56 | `pmp.rs` (see above) |
 | `memory.asidlen` | 16 | IC L74 |
-| `memory.pmp` | 16 entries, all usable, grain 0, TOR/NA4/NAPOT | IC L83, L85 |
+| `memory.pmp` | `count` 64 (**changed** from 16), `usable_count` 16, grain 0, TOR/NA4/NAPOT | IC L83, L85: entries 16–63 exist and read 0 |
 | `memory.misaligned.exceptions` | scalar loads/stores none; AMO and LR/SC AccessFault | IC L62, L64 |
 | `memory.regions` RAM | 0x8000_0000, 2 GiB, main memory | IC L136 (test profile RAM, 2 GiB default) and `link.ld` |
 | `memory.regions` RAM `misaligned_atomicity_granule_size_exp` | 12 (**changed** from 0) | IC L62, L89: a misaligned access that stays within a 4 KiB page is performed as one access with one PMP check, as in hart. With 0, Sail split it into aligned chunks and PMP-checked each, which differs for an access that straddles a PMP boundary inside a page |
 | `memory.misaligned.default_allowed_within_exp` | 0 (unchanged) | Applies only where the MAG does not: page-crossing RAM accesses (see limits below); misaligned device accesses fault first (IC L63) |
-| `memory.regions` MMIO | 0x0200_0000–0x1200_0000, misaligned scalar access AccessFault (**changed**) | IC L120, L63 (within a page; see limits below for page-crossing accesses) |
+| `memory.regions` devices | One region per test-profile device (**changed** from one region over 0x0200_0000–0x1200_0000): syscon 0x0010_0000 (4 KiB), CLINT 0x0200_0000 (64 KiB), SIG 0x0C00_0000 (4 KiB), UART 0x1000_0000 (4 KiB). Addresses between them are unmapped, as in hart | IC L136, L119; base and size of each device in `Board::new_test` (`crates/hart-core/src/board.rs`). Sail regions are whole pages, so the SIG and UART regions are larger than the devices (see limits below) |
+| `memory.regions` device attributes | IO memory, not executable, no AMOs (`AMONone`) or LR/SC (`RsrvNone`), no page-table reads or writes; misaligned scalar access AccessFault (**changed**) | IC L120, L63 (within a page; see limits below for page-crossing accesses) |
 | `memory.regions` ROM | **removed** | `hart --elf` has nothing at 0x1000 (IC L136) |
 | `platform.vendorid/archid/impid/hartid` | 0 | IC L14, L15 |
 | `platform.reservation` | 8-byte set, `require_exact_reservation_addr` true (**changed**), `invalidate_on_same_hart_store` false | IC L65 |
-| `platform.clint` | base 0x0200_0000 | IC L125 |
+| `platform.clint` | base 0x0200_0000, size 0x1_0000 (**changed** from 0xC_0000) | IC L125; `CLINT_SIZE` in `crates/hart-core/src/devices/clint.rs` |
 | `platform.simple_interrupt_generator` | base 0x0C00_0000 | IC L137 |
 | `platform.interrupts`, `extensions.S.interrupts` | all supported | IC L30–31 |
 | `platform.clock_frequency` | 10 MHz (**changed**) | IC L123 |
@@ -175,7 +178,7 @@ extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all 
 | `platform.wfi_is_nop` false; `wfi_available_to_user_mode` false; `max_time_to_wait` 200 | | IC L67, L135 (see limits below) |
 | `extensions.F.fflags_dirty_policy` | Fflags_Dirty_Flag (**changed**) | IC L107: FS becomes Dirty when an instruction raises any flag, even an already-set one |
 | `extensions.Sv48.supported` | false (**changed**) | IC L73 |
-| `Zicbo*`, `Svpbmt`, `Sstc`, `Svadu`, `Svnapot`, `Sdtrig` (0 triggers) | disabled | IC L32, L33, L76 |
+| `Zicbo*`, `Svpbmt`, `Sstc`, `Svadu`, `Svnapot`, `Sdtrig` (0 triggers) | disabled | IC L32, L33, L76; for the trigger CSRs see limits below |
 
 ### Macros and linker script
 
@@ -209,7 +212,24 @@ Sail has no option for a few hart choices. Each is listed with how it is handled
   can differ when a PMP boundary lies inside one page's part, and in which bytes a store that
   faults on its second page has already written.
 - **Misaligned device access that crosses a page** (IC L63): hart splits it into byte
-  accesses; Sail's MMIO region raises an access fault for every misaligned access.
+  accesses; Sail's device regions raise an access fault for every misaligned access.
+- **Debug-trigger CSRs** (IC L33): hart implements the Sdtrig CSRs with zero triggers, as
+  Spike does with `--triggers=0`: `tselect`, `tdata1`–`tdata3`, and `tinfo` read 0 and ignore
+  writes, and `scontext` (32 bits) and `mcontext` (13 bits) are read/write registers. No Sail
+  setting matches: with `Sdtrig.supported` false these CSRs raise illegal instruction, and
+  with it true Sail requires `num_triggers` of at least 1. The configuration declares no
+  Sdtrig (absent from `hart-rv64gc.yaml`, disabled in `sail.json`), so ACT4 generates no Sdtrig
+  tests.
+- **CLINT register accesses** (IC L125): hart's CLINT accepts naturally aligned 1-, 2-, 4-,
+  and 8-byte accesses to any part of `msip`, `mtimecmp`, and `mtime`, and reads 0 and ignores
+  writes at other offsets (`crates/hart-core/src/devices/clint.rs`). Sail's CLINT accepts only
+  4- or 8-byte accesses at the start of a register and 4-byte accesses at the upper half of
+  `mtimecmp` and `mtime`; any other access is an access fault.
+- **UART, syscon, and the rest of the SIG and UART pages** (IC L127, L128, L136, L137): Sail
+  has no model of the test profile's UART (0x1000_0000) or syscon (0x0010_0000), so their
+  regions behave as plain memory in Sail. The SIG uses 0x20 bytes and the UART 0x100 bytes of
+  their 4 KiB pages; in hart the rest of each page is unmapped (access fault), while in Sail it
+  is plain memory. ACT4 tests use HTIF for output and exit, not these devices.
 
 If a generated test exercises one of these differences, it fails on hart, and the failure is
 reported and resolved like any other: hart changes, or this configuration changes if Sail

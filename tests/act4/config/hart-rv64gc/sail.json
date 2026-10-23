@@ -244,7 +244,7 @@
       "grain": 0,
       // This specifies the number of PMP entries present.
       // The value must be one of 0, 16, or 64.
-      "count": 16,
+      "count": 64,
       // This specifies the number of usable PMP entries.
       // Entries higher than this are read-only-zero.
       // The value must be less than or equal to `count`.
@@ -319,16 +319,112 @@
     "regions": [
       // No ROM region: hart --elf has nothing at 0x1000 (the upstream config had a
       // read-only DTB ROM there).
-      // MMIO
+      // One IO region per device of the hart --elf test profile, so addresses between
+      // devices are unmapped here as in hart. Regions must be whole 4 KiB pages, so the
+      // SIG (0x20 bytes) and UART (0x100 bytes) pages extend past those devices.
+      // syscon (no Sail model)
       {
-        "base": {
-          "len": 64,
-          "value": "0x2000000"
+        "base": { "len": 64, "value": "0x100000" },
+        "size": { "len": 64, "value": "0x1000" },
+        "attributes": {
+          "mem_type": "IOMemory",
+          "cacheable": false,
+          "coherent": true,
+          "executable": false,
+          "readable": true,
+          "writable": true,
+          "read_idempotent": false,
+          "write_idempotent": false,
+          "misaligned_exceptions": {
+            "load_store": {
+              "Some": "AccessFault"
+            },
+            "vector": {
+              "None": null
+            },
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
+          },
+          "atomic_support": "AMONone",
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
+          "reservability": "RsrvNone",
+          "supports_cbo_zero": false,
+          "supports_pte_read": false,
+          "supports_pte_write": false
         },
-        "size": {
-          "len": 64,
-          "value": "0x10000000"
+        "include_in_device_tree": false
+      },
+      // CLINT
+      {
+        "base": { "len": 64, "value": "0x2000000" },
+        "size": { "len": 64, "value": "0x10000" },
+        "attributes": {
+          "mem_type": "IOMemory",
+          "cacheable": false,
+          "coherent": true,
+          "executable": false,
+          "readable": true,
+          "writable": true,
+          "read_idempotent": false,
+          "write_idempotent": false,
+          "misaligned_exceptions": {
+            "load_store": {
+              "Some": "AccessFault"
+            },
+            "vector": {
+              "None": null
+            },
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
+          },
+          "atomic_support": "AMONone",
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
+          "reservability": "RsrvNone",
+          "supports_cbo_zero": false,
+          "supports_pte_read": false,
+          "supports_pte_write": false
         },
+        "include_in_device_tree": false
+      },
+      // SIG (simple_interrupt_generator)
+      {
+        "base": { "len": 64, "value": "0xC000000" },
+        "size": { "len": 64, "value": "0x1000" },
+        "attributes": {
+          "mem_type": "IOMemory",
+          "cacheable": false,
+          "coherent": true,
+          "executable": false,
+          "readable": true,
+          "writable": true,
+          "read_idempotent": false,
+          "write_idempotent": false,
+          "misaligned_exceptions": {
+            "load_store": {
+              "Some": "AccessFault"
+            },
+            "vector": {
+              "None": null
+            },
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
+          },
+          "atomic_support": "AMONone",
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
+          "reservability": "RsrvNone",
+          "supports_cbo_zero": false,
+          "supports_pte_read": false,
+          "supports_pte_write": false
+        },
+        "include_in_device_tree": false
+      },
+      // UART (no Sail model)
+      {
+        "base": { "len": 64, "value": "0x10000000" },
+        "size": { "len": 64, "value": "0x1000" },
         "attributes": {
           "mem_type": "IOMemory",
           "cacheable": false,
@@ -435,7 +531,7 @@
       // If supported, this must be in a suitable IO memory region (see `memory.regions`).
       // Otherwise, these values can be left as 0.
       "base": 33554432,
-      "size": 786432
+      "size": 65536
     },
     // Very simple MMIO device to generate interrupts for testing
     // purposes. See docs/SimpleInterruptGenerator.md for details.
