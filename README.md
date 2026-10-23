@@ -116,7 +116,11 @@ same board API.
 
 The results below come from the final evaluation of commit
 [`3f756f9`](https://github.com/theoi/hart/commit/3f756f95472f84ca4e0139f4c1b71f415181ce2e).
-Each check can be rerun from this repository.
+TestFloat ran at commit
+[`5978ccd`](https://github.com/theoi/hart/commit/5978ccd7da5c96b2112703b8a47b1d5380ea09f9); the
+soft-float and floating-point instruction code (`crates/hart-core/src/softfloat`,
+`crates/hart-core/src/cpu/fp`) is unchanged since. Each check can be rerun from this
+repository.
 
 | Check | What it shows | Result |
 | --- | --- | --- |

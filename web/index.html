@@ -81,8 +81,10 @@
             </ul>
             <p class="note">
               Results for commit <a href="https://github.com/theoi/hart/commit/3f756f95472f84ca4e0139f4c1b71f415181ce2e" target="_blank" rel="noopener"><code>3f756f9</code></a>.
-              The <a href="https://github.com/theoi/hart#how-hart-was-validated" target="_blank" rel="noopener">evidence</a>
-              and the commands to rerun each check are in the README.
+              TestFloat ran at commit <a href="https://github.com/theoi/hart/commit/5978ccd7da5c96b2112703b8a47b1d5380ea09f9" target="_blank" rel="noopener"><code>5978ccd</code></a>;
+              the soft-float and floating-point instruction code (<code>crates/hart-core/src/softfloat</code>,
+              <code>crates/hart-core/src/cpu/fp</code>) is unchanged since. The results and the commands to rerun each check
+              are in the <a href="https://github.com/theoi/hart#how-hart-was-validated" target="_blank" rel="noopener">README</a>.
             </p>
           </article>
 
@@ -95,7 +97,9 @@ gh release download guest-v1 -R theoi/hart \
 target/release/hart --images images</code></pre>
             <p>
               <a href="https://github.com/theoi/hart/blob/main/guest/README.md" target="_blank" rel="noopener"><code>guest/build.sh</code></a>
-              builds the guest images from pinned upstream sources with no source patches. The
+              builds the guest images from pinned upstream sources with no patches written by this project
+              (Buildroot's own stock patches are listed in
+              <a href="https://github.com/theoi/hart/blob/main/guest/README.md#patches" target="_blank" rel="noopener"><code>guest/README.md</code></a>). The
               <a href="https://github.com/theoi/hart/releases/tag/guest-v1" target="_blank" rel="noopener">guest-v1 release</a>
               has the images, their checksums, and the complete corresponding source and license notices
               (<a href="https://github.com/theoi/hart/releases/download/guest-v1/legal-info.tar">legal-info.tar</a>).
