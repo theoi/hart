@@ -25,9 +25,13 @@ f64_mulAdd   rne       6133248          0
 TOTAL: 210 runs, 248646000 vectors, 0 mismatches, 0 errors
 ```
 
-The exit status is 0 only when every run produced vectors and none mismatched. Up to
-`--show N` mismatches (default 5) are printed under each row, with operands, the expected
-result and flags, and hart's result and flags.
+The exit status is 0 only when every run is complete and none mismatched. A run is complete
+when `testfloat_gen` exits successfully and emits exactly the full level's vector count for
+that function (the table in `full_level_count` in `src/main.rs`, which matches the sizes
+below), or exactly COUNT for a capped `--n` run. A truncated or overlong stream is an error.
+
+Up to `--show N` mismatches (default 5) are printed under each row, with operands, the
+expected result and flags, and hart's result and flags.
 
 ## Reference build
 
@@ -83,9 +87,10 @@ three-operand ones, where N is 1936 for binary32 and 4488 for binary64:
 
 | Function (per rounding mode) | Level 2 vectors | Time on one core |
 | --- | ---: | ---: |
-| `f32_add`, `sub`, `mul`, `div` | 7,496,192 | ~6 s |
-| `f64_add`, `sub`, `mul`, `div` | 40,284,288 | ~30 s |
-| `f32_sqrt` / `f64_sqrt` | 8,800 / 26,112 | <1 s |
+| `f32_add`, `sub`, `mul`, `div`, `eq`, `le`, `lt` | 7,496,192 | ~6 s |
+| `f64_add`, `sub`, `mul`, `div`, `eq`, `le`, `lt` | 40,284,288 | ~30 s |
+| `f32_sqrt` / `f64_sqrt`, and every `f32_to_*` / `f64_to_*` | 8,800 / 26,112 | <1 s |
+| `ui32_to_*`, `i32_to_*` / `ui64_to_*`, `i64_to_*` | 15,500 / 63,756 | <1 s |
 | `f32_mulAdd` | 14,512,627,712 | ~3 h |
 | `f64_mulAdd` | 180,795,884,544 | ~37 h |
 
@@ -111,7 +116,7 @@ ACT4 cover those.
 
 ```text
 hart-testfloat run [--level N] [--n COUNT] [--seed S] [--jobs N] [--rounding LIST] [--gen PATH] [--show N] [FUNCTION...]
-hart-testfloat check FUNCTION RM [--show N] < vectors
+hart-testfloat check FUNCTION RM [--level N] [--show N] < vectors
 hart-testfloat list
 ```
 
@@ -126,6 +131,7 @@ hart-testfloat list
       | ../../target/release/hart-testfloat check f64_div rdn
   ```
 
+  With `--level N`, `check` also fails unless the stream holds exactly the full level-N count.
 - `list` prints every function name `run` and `check` accept.
 
 ## Checking the checker

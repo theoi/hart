@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! hart-testfloat run [--level N] [--n COUNT] [--seed S] [--jobs N] [--rounding LIST] [--gen PATH] [--show N] [FUNCTION...]
-//! hart-testfloat check FUNCTION RM [--show N] < vectors
+//! hart-testfloat check FUNCTION RM [--level N] [--show N] < vectors
 //! hart-testfloat list
 //! ```
 //!
@@ -230,6 +230,42 @@ fn check_stream(
     Ok(out)
 }
 
+/// Vectors a complete `testfloat_gen -level 1` or `-level 2` run emits for `source`
+/// (TestFloat's `genCases_total`). The count depends only on the operand types, not on
+/// the rounding mode, `-exact`, or the seed. The values were measured from testfloat_gen's
+/// output; the level-2 mulAdd totals are the minimums testfloat_gen reports for `-n`.
+fn full_level_count(source: &str, level: u32) -> Option<u64> {
+    let (level1, level2): (u64, u64) = if source.starts_with("ui32_") || source.starts_with("i32_") {
+        (372, 15_500)
+    } else if source.starts_with("ui64_") || source.starts_with("i64_") {
+        (756, 63_756)
+    } else {
+        let (fmt, op) = source.split_once('_')?;
+        let single = match fmt {
+            "f32" => true,
+            "f64" => false,
+            _ => return None,
+        };
+        match op {
+            "mulAdd" => (6_133_248, if single { 14_512_627_712 } else { 180_795_884_544 }),
+            "add" | "sub" | "mul" | "div" | "eq" | "le" | "lt" => (46_464, if single { 7_496_192 } else { 40_284_288 }),
+            "sqrt" | "to_ui32" | "to_ui64" | "to_i32" | "to_i64" | "to_f32" | "to_f64" => {
+                if single {
+                    (600, 8_800)
+                } else {
+                    (768, 26_112)
+                }
+            }
+            _ => return None,
+        }
+    };
+    match level {
+        1 => Some(level1),
+        2 => Some(level2),
+        _ => None,
+    }
+}
+
 /// Options passed through to `testfloat_gen`.
 struct GenOptions {
     path: String,
@@ -269,8 +305,14 @@ fn run_one(gen: &GenOptions, func: &Func, rm: &(&str, &str, RoundingMode), show:
         return Err(format!("{path} failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
     }
     let outcome = result?;
-    if outcome.cases == 0 || gen.count.is_some_and(|n| outcome.cases != n) {
-        return Err(format!("{path} produced only {} vectors for {}", outcome.cases, func.source));
+    // A generator that stops early but exits successfully must not pass.
+    let expected = match gen.count {
+        Some(n) => n,
+        None => full_level_count(func.source, gen.level)
+            .ok_or_else(|| format!("no expected vector count for {} at level {}", func.source, gen.level))?,
+    };
+    if outcome.cases != expected {
+        return Err(format!("{path} produced {} vectors for {}, expected {expected}", outcome.cases, func.source));
     }
     Ok(outcome)
 }
@@ -283,7 +325,7 @@ fn default_gen() -> String {
 fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  hart-testfloat run [--level N] [--n COUNT] [--seed S] [--jobs N] [--rounding LIST] [--gen PATH] [--show N] [FUNCTION...]\n  \
-         hart-testfloat check FUNCTION RM [--show N] < vectors\n  hart-testfloat list\n\n\
+         hart-testfloat check FUNCTION RM [--level N] [--show N] < vectors\n  hart-testfloat list\n\n\
          RM is one of rne, rtz, rdn, rup, rmm; LIST is a comma-separated list of them or `all`."
     );
     ExitCode::from(2)
@@ -436,16 +478,20 @@ fn cmd_run(args: &[String]) -> ExitCode {
 
 fn cmd_check(args: &[String]) -> ExitCode {
     let mut show = 20usize;
+    let mut level: Option<u32> = None;
     let mut pos = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--show" {
-            match it.next().and_then(|v| v.parse().ok()) {
+        match a.as_str() {
+            "--show" => match it.next().and_then(|v| v.parse().ok()) {
                 Some(v) => show = v,
                 None => return usage(),
-            }
-        } else {
-            pos.push(a.as_str());
+            },
+            "--level" => match it.next().and_then(|v| v.parse().ok()) {
+                Some(v @ 1..=2) => level = Some(v),
+                _ => return usage(),
+            },
+            _ => pos.push(a.as_str()),
         }
     }
     let [name, rm] = pos[..] else { return usage() };
@@ -462,6 +508,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
             println!("{} {}: {} vectors, {} mismatches", func.name, rm.0, o.cases, o.mismatches);
             for s in &o.samples {
                 println!("{s}");
+            }
+            let expected = level.and_then(|l| full_level_count(func.source, l));
+            if let Some(n) = expected.filter(|&n| n != o.cases) {
+                eprintln!("expected {n} vectors for a full level {} run", level.unwrap_or(0));
+                return ExitCode::FAILURE;
             }
             if o.mismatches == 0 && o.cases > 0 {
                 ExitCode::SUCCESS
@@ -492,5 +543,38 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_function_has_full_level_counts() {
+        for f in FUNCS {
+            for level in [1, 2] {
+                assert!(full_level_count(f.source, level).is_some(), "{} level {level}", f.source);
+            }
+        }
+    }
+
+    /// A generator that stops early and exits 0 must fail the run.
+    #[test]
+    fn truncated_generator_output_fails() {
+        let dir = std::env::temp_dir().join(format!("hart-testfloat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("fake_gen.sh");
+        std::fs::write(&fake, "#!/bin/sh\nfor i in 1 2 3; do echo 3F800000 3F800000 40000000 00; done\n").unwrap();
+        let status = Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+        assert!(status.success());
+        let gen = GenOptions { path: fake.to_string_lossy().into_owned(), level: 1, count: None, seed: None };
+        let func = find_func("f32_add").unwrap();
+        let err = match run_one(&gen, func, find_rm("rne").unwrap(), 0) {
+            Ok(o) => panic!("truncated stream passed with {} vectors", o.cases),
+            Err(e) => e,
+        };
+        assert!(err.contains("produced 3 vectors for f32_add, expected 46464"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
