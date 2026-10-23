@@ -2,7 +2,7 @@
   "schema_version": 1,
   "description": "Fixed command script for the hart guest (promise acceptance 4 and 5). Shared by the native boot test (tests/boot) and the browser tests (tests/web). See tests/script/README.md for the matching rules.",
   "guest_release": "guest-v1",
-  "status": "provisional: uname is a regex until guest-v1 is published; mandelbrot.txt is produced on the host and is replaced by the QEMU/Spike reference run",
+  "status": "final for guest-v1: the uname and mandelbrot outputs are those of the guest-v1 images on QEMU (bare RV64GC CPU) and Spike, which agree byte for byte",
   "terminal": { "cols": 80, "rows": 24 },
   "banner": "Welcome to hart!",
   "prompt": { "text": "~ # ", "regex": "(^|\\n)~ # $" },
@@ -14,7 +14,7 @@
       "id": "uname",
       "input": "uname -a",
       "checks": [
-        { "type": "regex", "pattern": "^Linux hart 6\\.18\\.\\d+ #\\d+ SMP .+ riscv64 GNU/Linux$" }
+        { "type": "exact", "text": "Linux hart 6.18.55 #1 SMP Thu Oct 22 15:15:00 UTC 2026 riscv64 GNU/Linux" }
       ]
     },
     {
