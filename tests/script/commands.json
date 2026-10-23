@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "description": "Fixed command script for the hart guest (promise acceptance 4 and 5). Shared by the native boot test (tests/boot) and the browser tests (tests/web). See tests/script/README.md for the matching rules.",
+  "guest_release": "guest-v1",
+  "status": "provisional: uname is a regex until guest-v1 is published; mandelbrot.txt is produced on the host and is replaced by the QEMU/Spike reference run",
+  "terminal": { "cols": 80, "rows": 24 },
+  "banner": "Welcome to hart!",
+  "prompt": { "text": "~ # ", "regex": "(^|\\n)~ # $" },
+  "enter": "\r",
+  "boot_timeout_seconds": 300,
+  "command_timeout_seconds": 60,
+  "commands": [
+    {
+      "id": "uname",
+      "input": "uname -a",
+      "checks": [
+        { "type": "regex", "pattern": "^Linux hart 6\\.18\\.\\d+ #\\d+ SMP .+ riscv64 GNU/Linux$" }
+      ]
+    },
+    {
+      "id": "cpuinfo",
+      "input": "cat /proc/cpuinfo",
+      "checks": [
+        { "type": "regex", "pattern": "^isa\\s*:\\s*rv64imafdc", "flags": "m" },
+        { "type": "regex", "pattern": "^mmu\\s*:\\s*sv39$", "flags": "m" }
+      ]
+    },
+    {
+      "id": "atan2",
+      "input": "awk 'BEGIN{print atan2(0,-1)}'",
+      "checks": [
+        { "type": "exact", "text": "3.14159" }
+      ]
+    },
+    {
+      "id": "mandelbrot",
+      "input": "mandelbrot",
+      "checks": [
+        { "type": "exact_file", "path": "expected/mandelbrot.txt" }
+      ]
+    }
+  ]
+}
