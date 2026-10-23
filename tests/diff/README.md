@@ -71,7 +71,14 @@ not compared. Exit status: 0 match, 1 divergence, 2 malformed log.
 ```sh
 ./make_fixture.sh /path/to/spike /path/to/riscv-tests/isa   # regenerate fixtures
 ./selftest.py                                               # seed 1, 25 mutations per kind
+./selftest.py --seed N --per-kind 100 --end-store 0x80010000 fixtures/*.log.gz OUT/*.spike.log
 ```
+
+Extra logs, such as random-program logs kept by `run_seeds.sh --keep`, can be
+added. `--end-store` cuts them after the `tohost` store (0x80010000 for
+`rvgen.py` programs), because the spin loop after it is a run of identical
+lines in which a dropped or duplicated line cannot be located. Mutations never
+touch CSRs that `compare.py` drops (`mvip`).
 
 The self-test checks that identical logs match, that reordered register
 entries and interleaved console text still match, and that each injected

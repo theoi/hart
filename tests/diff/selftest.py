@@ -7,10 +7,14 @@ one injected mutation each, and checks that the comparator reports a divergence
 of the right kind at the mutated line. Negative controls (reordered register
 entries, interleaved console text) must still match.
 
-    selftest.py [--seed N] [--per-kind N] [LOG ...]
+    selftest.py [--seed N] [--per-kind N] [--end-store ADDR] [LOG ...]
 
-LOG defaults to fixtures/*.log.gz. Prints a JSON summary; exits 0 only if every
-mutation is detected at the correct line and every control matches.
+LOG defaults to fixtures/*.log.gz. --end-store cuts each log after its first
+store to ADDR (the HTIF tohost word), as compare.py --end-store does, so the
+post-exit spin loop is left out: one of several identical consecutive lines
+cannot be dropped or duplicated detectably at its own line. Prints a JSON
+summary; exits 0 only if every mutation is detected at the correct line and
+every control matches.
 """
 
 import argparse
@@ -28,6 +32,7 @@ sys.path.insert(0, HERE)
 import compare  # noqa: E402
 
 HEAD = re.compile(r"^(core\s+\d+: )(\d)( 0x)([0-9a-f]+)( \(0x)([0-9a-f]+)(\))(.*)$")
+IGNORED = {"mvip"}  # compare.py's default dropped CSRs
 
 
 def flip_hex(h, rng):
@@ -81,7 +86,7 @@ def mutate_field(lines, idx, kind, rng):
         p[1] = str((int(p[1]) + 1 + rng.randrange(2)) % 4)
     elif kind in ("xreg", "freg", "csr"):
         want = {"xreg": "x", "freg": "f", "csr": "c"}[kind]
-        cands = [i for i, e in enumerate(ents) if e[0] == want]
+        cands = [i for i, e in enumerate(ents) if e[0] == want and not ignored(e)]
         i = rng.choice(cands)
         toks = list(ents[i][1])
         toks[1] = "0x" + flip_hex(toks[1][2:], rng)
@@ -104,11 +109,16 @@ def mutate_field(lines, idx, kind, rng):
     lines[idx] = join(p, ents)
 
 
+def ignored(entry):
+    """CSR entries that compare.py drops (IGNORED), so mutating them is not a divergence."""
+    return entry[0] == "c" and entry[1][0].split("_", 1)[-1] in IGNORED
+
+
 def eligible(line, kind):
     p = split(line)
     if not p:
         return False
-    kinds = [e[0] for e in entries(p[7])]
+    kinds = [e[0] for e in entries(p[7]) if not ignored(e)]
     need = {"xreg": "x", "xreg-missing": "x", "freg": "f", "csr": "c",
             "load-addr": "load", "store-addr": "store", "store-value": "store"}.get(kind)
     return need is None or need in kinds
@@ -126,13 +136,14 @@ EXPECT = {
 def run(ref_lines, test_lines):
     ref = io.StringIO("\n".join(ref_lines) + "\n")
     test = io.StringIO("\n".join(test_lines) + "\n")
-    return compare.compare(ref, test, {"mvip"})
+    return compare.compare(ref, test, IGNORED)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--per-kind", type=int, default=25)
+    ap.add_argument("--end-store", type=lambda s: int(s, 0), default=None)
     ap.add_argument("logs", nargs="*")
     args = ap.parse_args()
     logs = args.logs or sorted(glob.glob(os.path.join(HERE, "fixtures", "*.log.gz")))
@@ -142,7 +153,12 @@ def main():
         op = gzip.open if path.endswith(".gz") else open
         with op(path, "rt", encoding="ascii") as f:
             lines = [ln.rstrip("\n") for ln in f if ln.startswith("core")]
-        summary["logs"].append({"path": os.path.relpath(path, HERE), "commits": len(lines)})
+        if args.end_store is not None:
+            mark = f"mem 0x{args.end_store:016x} 0x"
+            end = next((i for i, ln in enumerate(lines) if mark in ln), None)
+            if end is not None:
+                lines = lines[:end + 1]
+        summary["logs"].append({"path": path, "commits": len(lines)})
 
         rep = run(lines, lines)
         ok = rep["result"] == "match" and rep["commits"] == len(lines)
@@ -177,7 +193,7 @@ def main():
             if i % 97 == 0:
                 noisy.append("OpenSBI console text that is not a commit line")
         rep = compare.compare(io.StringIO("\n".join(lines) + "\n"),
-                              io.StringIO("\n".join(noisy) + "\n"), {"mvip"})
+                              io.StringIO("\n".join(noisy) + "\n"), IGNORED)
         ok = rep["result"] == "match"
         summary["controls"].setdefault("interleaved-text", [0, 0])
         summary["controls"]["interleaved-text"][0 if ok else 1] += 1
