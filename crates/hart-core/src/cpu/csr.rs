@@ -284,7 +284,10 @@ pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Resu
             fp::write_csr(cpu, addr, value).map_err(|_| illegal)?;
             return Ok(());
         }
-        SSTATUS => c.mstatus = (c.mstatus & !SSTATUS_WMASK) | (value & SSTATUS_WMASK),
+        SSTATUS => {
+            c.mstatus = (c.mstatus & !SSTATUS_WMASK) | (value & SSTATUS_WMASK);
+            super::mmu::update_ctx(cpu);
+        }
         SIE => c.mie = (c.mie & !c.mideleg) | (value & c.mideleg & MIE_WMASK),
         STVEC => c.stvec = value & !2,
         SCOUNTEREN => c.scounteren = value & 0xffff_ffff,
@@ -312,10 +315,8 @@ pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Resu
             if (v & MSTATUS_MPP) >> MSTATUS_MPP_SHIFT == 2 {
                 v &= !MSTATUS_MPP;
             }
-            if (v ^ c.mstatus) & (MSTATUS_MPRV | MSTATUS_SUM | MSTATUS_MXR | MSTATUS_MPP) != 0 {
-                cpu.mmu.flush();
-            }
             cpu.csr.mstatus = v;
+            super::mmu::update_ctx(cpu);
         }
         MISA => {}
         MEDELEG => c.medeleg = value & MEDELEG_WMASK,
@@ -479,6 +480,7 @@ pub fn take_trap(cpu: &mut Cpu, trap: Trap, epc: u64) {
         cpu.mode = Priv::Machine;
     }
     cpu.waiting = false;
+    super::mmu::update_ctx(cpu);
 }
 
 /// MRET. Caller has checked privilege.
@@ -496,6 +498,7 @@ pub fn mret(cpu: &mut Cpu) {
     }
     cpu.pc = c.mepc;
     cpu.mode = mpp;
+    super::mmu::update_ctx(cpu);
     let v = cpu.csr.read_mstatus();
     cpu.log_csr_write(MSTATUS, v);
 }
@@ -512,6 +515,7 @@ pub fn sret(cpu: &mut Cpu) {
     }
     cpu.pc = c.sepc;
     cpu.mode = spp;
+    super::mmu::update_ctx(cpu);
     let v = cpu.csr.read_mstatus();
     cpu.log_csr_write(MSTATUS, v);
 }

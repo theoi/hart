@@ -68,6 +68,25 @@ impl Ram {
         }
     }
 
+    /// Little-endian read at a byte offset that the caller knows is in range.
+    #[inline(always)]
+    pub(crate) fn read_at(&self, off: usize, size: u8) -> u64 {
+        let d = &self.data[off..off + size as usize];
+        match size {
+            1 => d[0] as u64,
+            2 => u16::from_le_bytes([d[0], d[1]]) as u64,
+            4 => u32::from_le_bytes([d[0], d[1], d[2], d[3]]) as u64,
+            _ => u64::from_le_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]]),
+        }
+    }
+
+    /// Little-endian write at a byte offset that the caller knows is in range.
+    #[inline(always)]
+    pub(crate) fn write_at(&mut self, off: usize, size: u8, value: u64) {
+        let bytes = value.to_le_bytes();
+        self.data[off..off + size as usize].copy_from_slice(&bytes[..size as usize]);
+    }
+
     /// Little-endian read of 1, 2, 4, or 8 bytes. Any alignment.
     #[inline]
     pub fn read(&self, paddr: u64, size: u8) -> Option<u64> {

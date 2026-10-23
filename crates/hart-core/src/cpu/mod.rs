@@ -182,8 +182,21 @@ impl Cpu {
 
     /// Translated, PMP-checked load of 1, 2, 4, or 8 bytes, zero-extended. Misaligned
     /// addresses are supported, including accesses that cross a page boundary.
-    #[inline]
+    #[inline(always)]
     pub fn load(&mut self, bus: &mut Bus, vaddr: u64, size: u8) -> Result<u64, Exception> {
+        let pgoff = vaddr & 0xfff;
+        if pgoff + size as u64 <= 0x1000 {
+            if let Some(off) = self.mmu.lookup(vaddr, Access::Load) {
+                let v = bus.ram.read_at((off + pgoff) as usize, size);
+                self.log_load(vaddr);
+                return Ok(v);
+            }
+        }
+        self.load_slow(bus, vaddr, size)
+    }
+
+    #[inline(never)]
+    fn load_slow(&mut self, bus: &mut Bus, vaddr: u64, size: u8) -> Result<u64, Exception> {
         let v = if (vaddr & 0xfff) + size as u64 <= 0x1000 {
             let paddr = self.translate(bus, vaddr, size, Access::Load)?;
             bus.read(paddr, size).map_err(|_| Exception::new(ExceptionCause::LoadAccessFault, vaddr))?
@@ -196,8 +209,21 @@ impl Cpu {
 
     /// Translated, PMP-checked store of the low `size` bytes of `value`. Misaligned
     /// addresses are supported, including accesses that cross a page boundary.
-    #[inline]
+    #[inline(always)]
     pub fn store(&mut self, bus: &mut Bus, vaddr: u64, size: u8, value: u64) -> Result<(), Exception> {
+        let pgoff = vaddr & 0xfff;
+        if pgoff + size as u64 <= 0x1000 {
+            if let Some(off) = self.mmu.lookup(vaddr, Access::Store) {
+                bus.ram.write_at((off + pgoff) as usize, size, value);
+                self.log_store(vaddr, value, size);
+                return Ok(());
+            }
+        }
+        self.store_slow(bus, vaddr, size, value)
+    }
+
+    #[inline(never)]
+    fn store_slow(&mut self, bus: &mut Bus, vaddr: u64, size: u8, value: u64) -> Result<(), Exception> {
         if (vaddr & 0xfff) + size as u64 <= 0x1000 {
             let paddr = self.translate(bus, vaddr, size, Access::Store)?;
             bus.write(paddr, size, value).map_err(|_| Exception::new(ExceptionCause::StoreAccessFault, vaddr))?;
