@@ -38,6 +38,11 @@ export default defineConfig({
       use: { ...devices['Desktop Firefox'], viewport },
     },
     {
+      name: 'chromium-ui',
+      testMatch: /ui\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], viewport },
+    },
+    {
       name: 'screenshots-chromium',
       testMatch: /screenshots\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport },
