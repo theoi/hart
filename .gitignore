@@ -2,3 +2,4 @@
 **/*.rs.bk
 /tests/riscv-tests/build/
 /tests/riscv-tests/src/
+/tests/testfloat/build/

@@ -1,0 +1,12 @@
+[package]
+name = "hart-testfloat"
+description = "Checks hart's soft-float library against Berkeley TestFloat vectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hart-core = { path = "../../crates/hart-core" }

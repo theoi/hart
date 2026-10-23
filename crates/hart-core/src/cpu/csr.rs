@@ -270,9 +270,8 @@ pub fn write(cpu: &mut Cpu, addr: u16, value: u64, insn: u32) -> Result<(), Exce
     let c = &mut cpu.csr;
     match addr {
         FFLAGS | FRM | FCSR => {
+            // fp::write_csr logs fflags/frm itself, the way Spike does (no fcsr entry).
             fp::write_csr(cpu, addr, value).map_err(|_| illegal)?;
-            let v = fp::read_csr(cpu, addr).unwrap_or(0);
-            cpu.log_csr_write(addr, v);
             return Ok(());
         }
         SSTATUS => c.mstatus = (c.mstatus & !SSTATUS_WMASK) | (value & SSTATUS_WMASK),

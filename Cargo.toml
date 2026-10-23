@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hart-core", "crates/hart-cli", "crates/hart-web"]
+members = ["crates/hart-core", "crates/hart-cli", "crates/hart-web", "tests/testfloat"]
 
 [workspace.package]
 version = "0.1.0"

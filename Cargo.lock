@@ -26,6 +26,13 @@ name = "hart-core"
 version = "0.1.0"
 
 [[package]]
+name = "hart-testfloat"
+version = "0.1.0"
+dependencies = [
+ "hart-core",
+]
+
+[[package]]
 name = "hart-web"
 version = "0.1.0"
 dependencies = [
