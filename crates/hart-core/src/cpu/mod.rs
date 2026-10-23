@@ -57,12 +57,15 @@ pub struct CpuConfig {
     /// after every Zicsr instruction, MRET, and SRET) and immediately before every Zicsr
     /// instruction. When false, interrupts are polled before every instruction.
     pub lockstep_irq: bool,
+    /// Reset PMP entry 0 to NAPOT over all memory with R/W/X, as Spike does. When false,
+    /// all PMP entries reset to off (the spec default).
+    pub pmp_reset_all_access: bool,
 }
 
 impl CpuConfig {
     /// Settings matching Spike, for differential testing.
     pub fn spike() -> Self {
-        CpuConfig { mvendorid: 0, marchid: 5, mimpid: 0, lockstep_irq: true }
+        CpuConfig { mvendorid: 0, marchid: 5, mimpid: 0, lockstep_irq: true, pmp_reset_all_access: true }
     }
 }
 
@@ -108,6 +111,25 @@ impl Cpu {
             tracer: None,
             commit: Commit::default(),
         }
+    }
+
+    /// A hart in its reset state with the given profile settings.
+    pub fn with_config(reset_pc: u64, config: CpuConfig) -> Self {
+        let mut cpu = Cpu::new(reset_pc);
+        cpu.set_config(config);
+        cpu
+    }
+
+    /// Change the profile settings, applying their reset-time effects (PMP reset state).
+    /// Call before the hart starts running.
+    pub fn set_config(&mut self, config: CpuConfig) {
+        if config.pmp_reset_all_access {
+            self.pmp.reset_all_access();
+        } else {
+            self.pmp = pmp::Pmp::new();
+        }
+        self.mmu.flush();
+        self.config = config;
     }
 
     /// Install or remove a commit-log sink. Tracing slows execution.

@@ -25,12 +25,12 @@ against Spike needs no special cases. The reference Spike configuration is
 | `mtvec`, `stvec` | Direct (0) and Vectored (1) modes. Bit 1 is read-only zero, so writing mode 2 or 3 yields 0 or 1. |
 | `mepc`, `sepc` | Bit 0 reads zero (C is always enabled, so IALIGN is 16). |
 | `mcause`, `scause` | Any value is stored (WLRL). |
-| `medeleg` | Bits 0–9, 12, 13, and 15 are writable. Ecall from M (11) cannot be delegated. |
+| `medeleg` | Bits 1–9, 12, 13, 15, and 19 are writable (mask `0x8b3fe`, as in Spike). Bit 0 is read-only zero because C makes misaligned fetches impossible. Ecall from M (11) cannot be delegated. |
 | `mideleg` | SSIP, STIP, and SEIP are writable. |
 | `mie` | MSIE, MTIE, MEIE, SSIE, STIE, and SEIE are writable. |
 | `mip` | M-mode writes SSIP, STIP, and SEIP. `sip` writes SSIP only, when delegated. MSIP and MTIP come from the CLINT, MEIP from the PLIC. A read of SEIP returns the software bit ORed with the PLIC line. `csrrs`/`csrrc` on `mip`/`sip` modify only the software-writable bits. |
 | `menvcfg`, `senvcfg` | Only FIOM is writable (no Zicbo*, Svpbmt, Sstc, or Svadu). |
-| Debug triggers | Not implemented (no Sdtrig). `tselect` and `tdata1`–`tdata3` read 0 and ignore writes. |
+| Debug triggers | Not implemented (no Sdtrig). `tselect`, `tdata1`–`tdata3`, and `tinfo` read 0 and ignore writes. `scontext` (32 bits) and `mcontext` (13 bits) are plain read/write registers, as in Spike with `--triggers=0`. |
 | Unimplemented CSRs | Raise illegal instruction. |
 
 ## Counters
@@ -41,6 +41,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Writes to `mcycle`/`minstret` | The written value takes precedence over that instruction's own increment. |
 | `mcountinhibit` | CY, IR, and HPM3–31 are writable; TM is read-only zero. |
 | `mhpmcounter3`–`31`, `mhpmevent3`–`31` | Hardwired to zero (writes ignored). `hpmcounterN` read 0 when enabled. |
+| Commit log for constant CSRs | Writes to `mhpmcounter3`–`31`, `tdata1`–`tdata3`, and `tinfo` produce no CSR entry, as in Spike. Writes to `tselect` and `mhpmevent3`–`31` log the value read back (0). A write to `mcontext` logs as `hcontext` (0x6a8), as Spike's proxy does. |
 | `mcounteren`, `scounteren` | All 32 bits writable. |
 | `time` | Reads the CLINT `mtime` value from `Wires`. |
 
@@ -80,6 +81,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Item | Choice |
 | --- | --- |
 | Entries | 16. `pmpcfg0` and `pmpcfg2` exist; odd `pmpcfg` CSRs raise illegal instruction. `pmpaddr16`–`63` and the upper `pmpcfg` registers read 0. |
+| Reset | All entries off. The lockstep (Spike) profile (`CpuConfig::pmp_reset_all_access`) resets entry 0 to NAPOT over all memory with R, W, and X (`pmpcfg0` = 0x1f, `pmpaddr0` = 0x003fffffffffffff), as Spike does. |
 | Granularity | 4 bytes (G = 0). TOR, NA4, and NAPOT are supported. |
 | Reserved R=0, W=1 | Stored as R=0, W=0. |
 | Locking | Locked entries ignore writes, as does `pmpaddr[i-1]` when entry `i` is locked TOR. |

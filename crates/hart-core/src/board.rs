@@ -355,7 +355,7 @@ impl Board {
             None => None,
         };
         let mut cpu = Cpu::new(SPIKE_ROM_BASE);
-        cpu.config = CpuConfig::spike();
+        cpu.set_config(CpuConfig::spike());
         bus.tick();
         let rom_dtb = SPIKE_ROM_BASE + 0x20;
         Ok(Self {

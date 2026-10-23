@@ -42,6 +42,15 @@ impl Pmp {
         Pmp::default()
     }
 
+    /// Reset state used by Spike: entry 0 is NAPOT over all of memory with R, W, and X
+    /// (`pmpcfg0 = 0x1f`, `pmpaddr0 = 0x003fffffffffffff`); all other entries are off.
+    pub fn reset_all_access(&mut self) {
+        *self = Pmp::new();
+        self.cfg[0] = (A_NAPOT << A_SHIFT) | R | W | X;
+        self.addr[0] = ADDR_MASK;
+        self.recompute();
+    }
+
     /// The `pmpNcfg` byte.
     pub fn cfg(&self, i: usize) -> u8 {
         self.cfg[i]

@@ -4,6 +4,7 @@
 use super::{fp, Cpu, Exception, Interrupt, Priv, Trap};
 use crate::bus::Bus;
 use crate::irq::{bits, HART_IRQ_MASK};
+use std::borrow::Cow;
 
 // ---- addresses ----
 pub const FFLAGS: u16 = 0x001;
@@ -53,10 +54,14 @@ pub const PMPCFG0: u16 = 0x3a0;
 pub const PMPCFG15: u16 = 0x3af;
 pub const PMPADDR0: u16 = 0x3b0;
 pub const PMPADDR63: u16 = 0x3ef;
+pub const SCONTEXT: u16 = 0x5a8;
+pub const HCONTEXT: u16 = 0x6a8;
 pub const TSELECT: u16 = 0x7a0;
 pub const TDATA1: u16 = 0x7a1;
 pub const TDATA2: u16 = 0x7a2;
 pub const TDATA3: u16 = 0x7a3;
+pub const TINFO: u16 = 0x7a4;
+pub const MCONTEXT: u16 = 0x7a8;
 pub const MCYCLE: u16 = 0xb00;
 pub const MINSTRET: u16 = 0xb02;
 pub const MHPMCOUNTER3: u16 = 0xb03;
@@ -113,8 +118,13 @@ const SSTATUS_WMASK: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_FS
 pub const MISA_VALUE: u64 =
     (2 << 62) | (1 << 0) | (1 << 2) | (1 << 3) | (1 << 5) | (1 << 8) | (1 << 12) | (1 << 18) | (1 << 20);
 
-/// Delegable exceptions: everything except ecall-from-M (11) and the reserved codes.
-const MEDELEG_WMASK: u64 = 0xb3ff;
+/// Delegable exceptions, matching Spike: codes 1-9, 12, 13, 15, and 19. Bit 0
+/// (misaligned fetch) is read-only zero because C makes it impossible; ecall from M (11)
+/// cannot be delegated.
+const MEDELEG_WMASK: u64 = 0x8b3fe;
+/// Debug-spec context registers (present without triggers, as in Spike).
+const SCONTEXT_WMASK: u64 = 0xffff_ffff;
+const MCONTEXT_WMASK: u64 = 0x1fff;
 /// Delegable interrupts: the supervisor ones.
 const MIDELEG_WMASK: u64 = (1 << 1) | (1 << 5) | (1 << 9);
 const MIE_WMASK: u64 = 0xaaa;
@@ -153,6 +163,8 @@ pub struct CsrFile {
     pub scause: u64,
     pub stval: u64,
     pub satp: u64,
+    pub scontext: u64,
+    pub mcontext: u64,
 }
 
 impl CsrFile {
@@ -253,6 +265,7 @@ pub fn read(cpu: &Cpu, bus: &Bus, addr: u16, insn: u32) -> Result<u64, Exception
             }
             c.satp
         }
+        SCONTEXT => c.scontext,
         MVENDORID => cpu.config.mvendorid,
         MARCHID => cpu.config.marchid,
         MIMPID => cpu.config.mimpid,
@@ -273,7 +286,8 @@ pub fn read(cpu: &Cpu, bus: &Bus, addr: u16, insn: u32) -> Result<u64, Exception
         MTVAL => c.mtval,
         MIP => mip(cpu, bus),
         PMPCFG0..=PMPCFG15 | PMPADDR0..=PMPADDR63 => cpu.pmp.read_csr(addr).ok_or(illegal)?,
-        TSELECT | TDATA1 | TDATA2 | TDATA3 => 0,
+        TSELECT | TDATA1 | TDATA2 | TDATA3 | TINFO => 0,
+        MCONTEXT => c.mcontext,
         MCYCLE => c.mcycle,
         MINSTRET => c.minstret,
         MHPMCOUNTER3..=MHPMCOUNTER31 => 0,
@@ -349,11 +363,14 @@ pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Resu
             }
             cpu.mmu.flush();
         }
-        TSELECT | TDATA1 | TDATA2 | TDATA3 => {}
+        SCONTEXT => c.scontext = value & SCONTEXT_WMASK,
+        MCONTEXT => c.mcontext = value & MCONTEXT_WMASK,
+        TSELECT => {}
+        // Constant registers: writes are ignored and, as in Spike, not logged.
+        TDATA1 | TDATA2 | TDATA3 | TINFO | MHPMCOUNTER3..=MHPMCOUNTER31 => return Ok(()),
         // A write to a counter takes precedence over the increment of the same instruction.
         MCYCLE => c.mcycle = if c.mcountinhibit & 1 == 0 { value.wrapping_sub(1) } else { value },
         MINSTRET => c.minstret = if c.mcountinhibit & 4 == 0 { value.wrapping_sub(1) } else { value },
-        MHPMCOUNTER3..=MHPMCOUNTER31 => {}
         _ => return Err(illegal),
     }
     if cpu.tracing() {
@@ -396,6 +413,9 @@ fn log_value(cpu: &Cpu, addr: u16) -> (u16, u64) {
     let c = &cpu.csr;
     match addr {
         MCYCLE => (MCYCLE, if c.mcountinhibit & 1 == 0 { c.mcycle.wrapping_add(1) } else { c.mcycle }),
+        // Spike's mcontext is a proxy that logs under the hcontext name.
+        MCONTEXT => (HCONTEXT, c.mcontext),
+        SCONTEXT => (SCONTEXT, c.scontext),
         MINSTRET => (MINSTRET, if c.mcountinhibit & 4 == 0 { c.minstret.wrapping_add(1) } else { c.minstret }),
         _ => {
             let v = match addr {
@@ -532,8 +552,8 @@ pub fn sret(cpu: &mut Cpu) {
 }
 
 /// Name used in Spike commit logs (`c768_mstatus`).
-pub fn name(addr: u16) -> &'static str {
-    match addr {
+pub fn name(addr: u16) -> Cow<'static, str> {
+    let fixed = match addr {
         FFLAGS => "fflags",
         FRM => "frm",
         FCSR => "fcsr",
@@ -551,6 +571,8 @@ pub fn name(addr: u16) -> &'static str {
         STVAL => "stval",
         SIP => "sip",
         SATP => "satp",
+        SCONTEXT => "scontext",
+        HCONTEXT => "hcontext",
         MVENDORID => "mvendorid",
         MARCHID => "marchid",
         MIMPID => "mimpid",
@@ -564,37 +586,95 @@ pub fn name(addr: u16) -> &'static str {
         MTVEC => "mtvec",
         MCOUNTEREN => "mcounteren",
         MENVCFG => "menvcfg",
+        MVIP => "mvip",
         MCOUNTINHIBIT => "mcountinhibit",
         MSCRATCH => "mscratch",
         MEPC => "mepc",
         MCAUSE => "mcause",
         MTVAL => "mtval",
         MIP => "mip",
-        MVIP => "mvip",
         TSELECT => "tselect",
         TDATA1 => "tdata1",
         TDATA2 => "tdata2",
         TDATA3 => "tdata3",
+        TINFO => "tinfo",
+        MCONTEXT => "mcontext",
         MCYCLE => "mcycle",
         MINSTRET => "minstret",
-        0x3a0 => "pmpcfg0",
-        0x3a2 => "pmpcfg2",
-        0x3b0 => "pmpaddr0",
-        0x3b1 => "pmpaddr1",
-        0x3b2 => "pmpaddr2",
-        0x3b3 => "pmpaddr3",
-        0x3b4 => "pmpaddr4",
-        0x3b5 => "pmpaddr5",
-        0x3b6 => "pmpaddr6",
-        0x3b7 => "pmpaddr7",
-        0x3b8 => "pmpaddr8",
-        0x3b9 => "pmpaddr9",
-        0x3ba => "pmpaddr10",
-        0x3bb => "pmpaddr11",
-        0x3bc => "pmpaddr12",
-        0x3bd => "pmpaddr13",
-        0x3be => "pmpaddr14",
-        0x3bf => "pmpaddr15",
+        HPMCOUNTER3..=HPMCOUNTER31 => return Cow::Owned(format!("hpmcounter{}", addr - CYCLE)),
+        MHPMEVENT3..=MHPMEVENT31 => return Cow::Owned(format!("mhpmevent{}", addr - MCOUNTINHIBIT)),
+        MHPMCOUNTER3..=MHPMCOUNTER31 => return Cow::Owned(format!("mhpmcounter{}", addr - MCYCLE)),
+        PMPCFG0..=PMPCFG15 => return Cow::Owned(format!("pmpcfg{}", addr - PMPCFG0)),
+        PMPADDR0..=PMPADDR63 => return Cow::Owned(format!("pmpaddr{}", addr - PMPADDR0)),
         _ => "unknown",
+    };
+    Cow::Borrowed(fixed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cpu::CpuConfig;
+    use crate::trace::{Commit, RegWrite, TraceSink};
+
+    struct Discard;
+    impl TraceSink for Discard {
+        fn commit(&mut self, _: &Commit) {}
+    }
+
+    fn take_csr_log(cpu: &mut Cpu) -> Vec<(u16, u64)> {
+        let log = cpu
+            .commit
+            .regs
+            .iter()
+            .filter_map(|r| match *r {
+                RegWrite::Csr(a, v) => Some((a, v)),
+                _ => None,
+            })
+            .collect();
+        cpu.commit.clear();
+        log
+    }
+
+    #[test]
+    fn spike_profile_csr_details() {
+        let mut cpu = Cpu::with_config(0x8000_0000, CpuConfig::spike());
+        cpu.set_tracer(Some(Box::new(Discard)));
+        let bus = Bus::new(0x8000_0000, 0x1000);
+        assert_eq!(read(&cpu, &bus, PMPCFG0, 0), Ok(0x1f));
+        assert_eq!(read(&cpu, &bus, PMPADDR0, 0), Ok(0x003f_ffff_ffff_ffff));
+        // OpenSBI writes 0xb109; misaligned fetch (bit 0) is not delegable with C.
+        write(&mut cpu, &bus, MEDELEG, 0xb109, 0).unwrap();
+        assert_eq!(take_csr_log(&mut cpu), [(MEDELEG, 0xb108)]);
+        assert_eq!(read(&cpu, &bus, TINFO, 0), Ok(0));
+        write(&mut cpu, &bus, MHPMCOUNTER3, 5, 0).unwrap();
+        write(&mut cpu, &bus, TDATA1, 5, 0).unwrap();
+        write(&mut cpu, &bus, TINFO, 5, 0).unwrap();
+        assert_eq!(take_csr_log(&mut cpu), []);
+        assert_eq!(read(&cpu, &bus, MHPMCOUNTER3, 0), Ok(0));
+        write(&mut cpu, &bus, MCONTEXT, !0, 0).unwrap();
+        write(&mut cpu, &bus, SCONTEXT, !0, 0).unwrap();
+        assert_eq!(take_csr_log(&mut cpu), [(HCONTEXT, 0x1fff), (SCONTEXT, 0xffff_ffff)]);
+    }
+
+    #[test]
+    fn default_profile_pmp_resets_off() {
+        let cpu = Cpu::new(0x8000_0000);
+        let bus = Bus::new(0x8000_0000, 0x1000);
+        assert_eq!(read(&cpu, &bus, PMPCFG0, 0), Ok(0));
+        assert_eq!(read(&cpu, &bus, PMPADDR0, 0), Ok(0));
+    }
+
+    #[test]
+    fn numbered_names_match_spike() {
+        assert_eq!(name(0x3c0), "pmpaddr16");
+        assert_eq!(name(0x3ef), "pmpaddr63");
+        assert_eq!(name(0x3ae), "pmpcfg14");
+        assert_eq!(name(0xb03), "mhpmcounter3");
+        assert_eq!(name(0xb1f), "mhpmcounter31");
+        assert_eq!(name(0x33f), "mhpmevent31");
+        assert_eq!(name(0xc03), "hpmcounter3");
+        assert_eq!(name(0x7a4), "tinfo");
+        assert_eq!(name(0x6a8), "hcontext");
     }
 }
