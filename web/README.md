@@ -26,6 +26,11 @@ npm run build                                  # -> dist/
 - `npm run wasm:stub` builds a scripted stand-in machine (the `stub` feature) that replays a
   boot log and runs a toy shell, for front-end work without a guest.
 
+`node scripts/bench.mjs` boots the prepared images in Node's V8 (the engine Chromium uses)
+and reports the WebAssembly build's speed, driving the machine the way the worker does.
+Run it with `node --cpu-prof` on a build that keeps function names (`wasm-opt -g`) to
+profile.
+
 `npm run dev` starts a Vite dev server. To serve `dist/` the way GitHub Pages does, under
 `/hart/`, run `node ../tests/web/serve.mjs`.
 
