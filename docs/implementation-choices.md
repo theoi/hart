@@ -63,7 +63,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Misaligned access to a device region | Access fault. |
 | Misaligned AMO, LR, SC | Access fault: load access fault (5) for LR, store/AMO access fault (7) for SC and AMOs. Matches Spike and Sail's RVA20S64 configuration. |
 | LR/SC reservation | The physical address of the LR. SC succeeds only at that address, and any SC clears the reservation. SC is translated as a store first, so it can page-fault even when it would fail. Traps and xRET do not clear the reservation. |
-| FENCE, FENCE.I | FENCE is a no-op. FENCE.I invalidates any decoded-instruction cache. |
+| FENCE, FENCE.I | Both are no-ops. Decoded instructions are cached per physical page and dropped on any write to that page, so instruction fetch always sees earlier stores. |
 | WFI | Stalls until `mip & mie` is nonzero, regardless of global interrupt enables. Illegal in U-mode, and in S-mode when `mstatus.TW` = 1. |
 
 ## Virtual memory (Sv39)
@@ -74,7 +74,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | `satp.ASID` | 16 bits, writable. The TLB is flushed on every `satp` write, so ASIDs are not used for tagging. |
 | A and D bits | Svade: a leaf PTE with A = 0, or D = 0 on a store or AMO, raises a page fault. Hardware never writes PTEs. |
 | Reserved PTE bits | Bits 63:54 must be zero (no Svnapot or Svpbmt), otherwise page fault. A non-leaf PTE with A, D, or U set raises a page fault. |
-| TLB | 256 entries, direct-mapped by virtual page number. Flushed by SFENCE.VMA (any operands), `satp` writes, PMP writes, and `mstatus` writes that change MPRV, SUM, MXR, or MPP. |
+| TLB | 1024 entries per access type (fetch, load, store), direct-mapped by virtual page number and tagged with the translation context (privilege mode, MPRV/MPP, SUM, MXR), so mode and `mstatus` changes need no flush. Flushed by SFENCE.VMA (any operands), `satp` writes, and PMP writes. |
 
 ## PMP
 

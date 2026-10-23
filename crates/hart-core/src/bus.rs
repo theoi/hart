@@ -26,20 +26,9 @@ pub trait Device: Any {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId(usize);
 
-/// A decoded instruction cached for one 2-byte-aligned RAM address. `raw == 0` marks
-/// an empty slot (the all-zero encoding is always illegal, so it is never cached).
-#[derive(Clone, Copy, Debug)]
-pub struct CodeSlot {
-    pub insn: Insn,
-    pub raw: u32,
-}
-
-const EMPTY_SLOT: CodeSlot = CodeSlot { insn: Insn::ILLEGAL, raw: 0 };
-/// Slots per 4 KiB page.
+/// Decoded-instruction slots per 4 KiB page, one per 2-byte-aligned address.
 pub const CODE_SLOTS: usize = 2048;
-type CodePage = Box<[CodeSlot; CODE_SLOTS]>;
-/// Freed decoded pages kept for reuse.
-const SPARE_PAGES: usize = 64;
+const CODE_SHIFT: u32 = 11;
 
 /// Main memory, plus a cache of decoded instructions for each RAM page that has been
 /// executed. Every write into a page drops that page's decoded instructions, so the
@@ -47,74 +36,137 @@ const SPARE_PAGES: usize = 64;
 pub struct Ram {
     base: u64,
     data: Vec<u8>,
-    code: Vec<Option<CodePage>>,
-    spare: Vec<CodePage>,
+    /// For each RAM page, the index of its decoded page in `code`, or 0 if it has none.
+    code_page: Vec<u32>,
+    /// Decoded instructions, `CODE_SLOTS` per decoded page. Decoded page 0 is never
+    /// assigned and stays all `Uncached`, so a RAM page without decoded instructions
+    /// reads as uncached with no separate check.
+    code: Vec<Insn>,
+    /// Decoded pages free for reuse.
+    free: Vec<u32>,
+    /// Set when a write through [`Ram::write`] or [`Bus::write`] drops decoded instructions.
+    code_dropped: bool,
+    /// Set when a RAM page is given decoded instructions.
+    code_page_added: bool,
 }
 
 impl Ram {
     pub fn new(base: u64, size: usize) -> Self {
         let pages = size.div_ceil(4096);
-        Ram { base, data: vec![0; size], code: (0..pages).map(|_| None).collect(), spare: Vec::new() }
+        Ram {
+            base,
+            data: vec![0; size],
+            code_page: vec![0; pages],
+            code: vec![Insn::UNCACHED; CODE_SLOTS],
+            free: Vec::new(),
+            code_dropped: false,
+            code_page_added: false,
+        }
     }
 
-    /// The cached decode for the instruction at byte offset `off`, if any.
+    /// Index in the decoded-instruction cache of the slot for byte offset `off`. The slot
+    /// holds `Op::Uncached` until [`Ram::cache_code`] fills it.
     #[inline(always)]
-    pub(crate) fn cached_code(&self, off: usize) -> Option<CodeSlot> {
-        let page = self.code[off >> 12].as_ref()?;
-        let slot = page[(off & 0xfff) >> 1];
-        (slot.raw != 0).then_some(slot)
+    pub(crate) fn code_slot(&self, off: usize) -> usize {
+        ((self.code_page[off >> 12] as usize) << CODE_SHIFT) | ((off & 0xfff) >> 1)
+    }
+
+    /// Index of the first slot of the decoded page for the RAM page holding `off`,
+    /// assigning an empty decoded page if it has none. The index stays valid until a
+    /// write into that RAM page (see [`Ram::write_at`]).
+    #[inline]
+    pub(crate) fn code_page_base(&mut self, off: usize) -> usize {
+        let p = off >> 12;
+        let mut idx = self.code_page[p];
+        if idx == 0 {
+            idx = self.assign_code_page(p);
+        }
+        (idx as usize) << CODE_SHIFT
+    }
+
+    /// The decoded instruction in cache slot `slot`.
+    #[inline(always)]
+    pub(crate) fn code(&self, slot: usize) -> Insn {
+        self.code[slot]
     }
 
     /// Cache the decode of the instruction at byte offset `off`. The instruction must
     /// lie entirely inside one page.
-    pub(crate) fn cache_code(&mut self, off: usize, slot: CodeSlot) {
-        let p = off >> 12;
-        if self.code[p].is_none() {
-            let page = match self.spare.pop() {
-                Some(mut page) => {
-                    page.fill(EMPTY_SLOT);
-                    page
-                }
-                None => Box::new([EMPTY_SLOT; CODE_SLOTS]),
-            };
-            self.code[p] = Some(page);
-        }
-        if let Some(page) = self.code[p].as_mut() {
-            page[(off & 0xfff) >> 1] = slot;
-        }
+    pub(crate) fn cache_code(&mut self, off: usize, insn: Insn) {
+        let base = self.code_page_base(off);
+        self.code[base | ((off & 0xfff) >> 1)] = insn;
     }
 
-    /// Drop decoded instructions for the pages touched by a write of `len` bytes at `off`.
+    #[cold]
+    fn assign_code_page(&mut self, p: usize) -> u32 {
+        let idx = match self.free.pop() {
+            Some(idx) => {
+                let b = (idx as usize) << CODE_SHIFT;
+                self.code[b..b + CODE_SLOTS].fill(Insn::UNCACHED);
+                idx
+            }
+            None => {
+                let idx = (self.code.len() >> CODE_SHIFT) as u32;
+                self.code.resize(self.code.len() + CODE_SLOTS, Insn::UNCACHED);
+                idx
+            }
+        };
+        self.code_page[p] = idx;
+        self.code_page_added = true;
+        idx
+    }
+
+    /// Whether the RAM page holding byte offset `off` has decoded instructions.
+    #[inline]
+    pub(crate) fn has_code(&self, off: usize) -> bool {
+        self.code_page[off >> 12] != 0
+    }
+
+    /// Whether a RAM page was given decoded instructions since the last call. Clears
+    /// the flag.
+    #[inline]
+    pub(crate) fn take_code_page_added(&mut self) -> bool {
+        core::mem::take(&mut self.code_page_added)
+    }
+
+    /// Drop decoded instructions for the pages touched by a write of `len` bytes at
+    /// `off`. Returns true if any were dropped.
     #[inline(always)]
-    fn invalidate(&mut self, off: usize, len: usize) {
+    fn invalidate(&mut self, off: usize, len: usize) -> bool {
         let first = off >> 12;
-        if self.code[first].is_some() {
-            self.drop_code(first);
-        }
         let last = (off + len - 1) >> 12;
-        if last != first && self.code[last].is_some() {
-            self.drop_code(last);
+        let mut dropped = false;
+        if self.code_page[first] != 0 {
+            self.drop_code(first);
+            dropped = true;
         }
+        if last != first && self.code_page[last] != 0 {
+            self.drop_code(last);
+            dropped = true;
+        }
+        dropped
     }
 
     #[cold]
     fn drop_code(&mut self, page: usize) {
-        if let Some(p) = self.code[page].take() {
-            if self.spare.len() < SPARE_PAGES {
-                self.spare.push(p);
-            }
-        }
+        self.free.push(self.code_page[page]);
+        self.code_page[page] = 0;
     }
 
     /// Drop all decoded instructions.
     pub fn flush_code(&mut self) {
-        for p in 0..self.code.len() {
-            if self.code[p].is_some() {
-                self.drop_code(p);
-            }
-        }
+        self.code_page.fill(0);
+        self.code.truncate(CODE_SLOTS);
+        self.free.clear();
+        self.code_dropped = true;
     }
 
+    /// Whether a write through [`Ram::write`] dropped decoded instructions since the
+    /// last call. Clears the flag.
+    #[inline]
+    pub(crate) fn take_code_dropped(&mut self) -> bool {
+        core::mem::take(&mut self.code_dropped)
+    }
     #[inline]
     pub fn base(&self) -> u64 {
         self.base
@@ -161,10 +213,21 @@ impl Ram {
         }
     }
 
-    /// Little-endian write at a byte offset that the caller knows is in range.
+    /// Little-endian write at a byte offset that the caller knows is in range. Returns
+    /// true if the write dropped decoded instructions, which invalidates indices from
+    /// [`Ram::code_page_base`].
     #[inline(always)]
-    pub(crate) fn write_at(&mut self, off: usize, size: u8, value: u64) {
-        self.invalidate(off, size as usize);
+    fn write_at(&mut self, off: usize, size: u8, value: u64) -> bool {
+        let dropped = self.invalidate(off, size as usize);
+        self.write_no_code(off, size, value);
+        dropped
+    }
+
+    /// Little-endian write at a byte offset that the caller knows is in range, inside
+    /// one page that holds no decoded instructions (as a store TLB hit guarantees).
+    #[inline(always)]
+    pub(crate) fn write_no_code(&mut self, off: usize, size: u8, value: u64) {
+        debug_assert!(!self.has_code(off) && !self.has_code(off + size as usize - 1));
         let bytes = value.to_le_bytes();
         self.data[off..off + size as usize].copy_from_slice(&bytes[..size as usize]);
     }
@@ -190,7 +253,9 @@ impl Ram {
             return None;
         }
         let off = self.offset(paddr, size as u64)?;
-        self.write_at(off, size, value);
+        if self.write_at(off, size, value) {
+            self.code_dropped = true;
+        }
         Some(())
     }
 }
@@ -303,12 +368,10 @@ impl Bus {
     pub fn write_bytes(&mut self, paddr: u64, bytes: &[u8]) -> Result<(), BusFault> {
         let off = self.ram.offset(paddr, bytes.len() as u64).ok_or(BusFault)?;
         if !bytes.is_empty() {
-            self.ram.invalidate(off, bytes.len());
-            let first = off >> 12;
-            let last = (off + bytes.len() - 1) >> 12;
-            for p in first + 1..last {
-                if self.ram.code[p].is_some() {
+            for p in off >> 12..=(off + bytes.len() - 1) >> 12 {
+                if self.ram.code_page[p] != 0 {
                     self.ram.drop_code(p);
+                    self.ram.code_dropped = true;
                 }
             }
         }

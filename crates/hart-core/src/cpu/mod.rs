@@ -46,6 +46,16 @@ pub enum StepResult {
     Waiting,
 }
 
+/// Why [`Cpu::run_straight`] stopped.
+enum FastExit {
+    /// The budget ran out or `irq_poll` was set.
+    Stop,
+    /// The next instruction needs [`Cpu::step_general`].
+    Step,
+    /// The instruction at `pc` raised this exception.
+    Trap(Exception),
+}
+
 /// Per-profile CPU settings.
 #[derive(Clone, Debug, Default)]
 pub struct CpuConfig {
@@ -155,11 +165,23 @@ impl Cpu {
 
     #[inline(always)]
     pub fn set_x(&mut self, rd: u32, value: u64) {
-        if rd != 0 {
-            self.x[rd as usize & 31] = value;
-            if self.tracing() {
-                self.commit.regs.push(RegWrite::X(rd as u8, value));
+        self.set_x_t::<true>(rd, value);
+    }
+
+    /// [`Cpu::set_x`], with the commit-log hook compiled out when `T` is false.
+    #[inline(always)]
+    pub(crate) fn set_x_t<const T: bool>(&mut self, rd: u32, value: u64) {
+        if T {
+            if rd != 0 {
+                self.x[rd as usize & 31] = value;
+                if self.tracing() {
+                    self.commit.regs.push(RegWrite::X(rd as u8, value));
+                }
             }
+        } else {
+            // Branch-free: write, then restore x0.
+            self.x[rd as usize & 31] = value;
+            self.x[0] = 0;
         }
     }
 
@@ -206,11 +228,17 @@ impl Cpu {
     /// addresses are supported, including accesses that cross a page boundary.
     #[inline(always)]
     pub fn load(&mut self, bus: &mut Bus, vaddr: u64, size: u8) -> Result<u64, Exception> {
+        self.load_t::<true>(bus, vaddr, size)
+    }
+
+    /// [`Cpu::load`], with the commit-log hook compiled out when `T` is false.
+    #[inline(always)]
+    pub(crate) fn load_t<const T: bool>(&mut self, bus: &mut Bus, vaddr: u64, size: u8) -> Result<u64, Exception> {
         let pgoff = vaddr & 0xfff;
         if pgoff + size as u64 <= 0x1000 {
             if let Some(off) = self.mmu.lookup(vaddr, Access::Load) {
                 let v = bus.ram.read_at((off + pgoff) as usize, size);
-                self.log_load(vaddr);
+                self.log_load_t::<T>(vaddr);
                 return Ok(v);
             }
         }
@@ -233,11 +261,23 @@ impl Cpu {
     /// addresses are supported, including accesses that cross a page boundary.
     #[inline(always)]
     pub fn store(&mut self, bus: &mut Bus, vaddr: u64, size: u8, value: u64) -> Result<(), Exception> {
+        self.store_t::<true>(bus, vaddr, size, value)
+    }
+
+    /// [`Cpu::store`], with the commit-log hook compiled out when `T` is false.
+    #[inline(always)]
+    pub(crate) fn store_t<const T: bool>(
+        &mut self,
+        bus: &mut Bus,
+        vaddr: u64,
+        size: u8,
+        value: u64,
+    ) -> Result<(), Exception> {
         let pgoff = vaddr & 0xfff;
         if pgoff + size as u64 <= 0x1000 {
             if let Some(off) = self.mmu.lookup(vaddr, Access::Store) {
-                bus.ram.write_at((off + pgoff) as usize, size, value);
-                self.log_store(vaddr, value, size);
+                bus.ram.write_no_code((off + pgoff) as usize, size, value);
+                self.log_store_t::<T>(vaddr, value, size);
                 return Ok(());
             }
         }
@@ -252,8 +292,28 @@ impl Cpu {
         } else {
             self.store_split(bus, vaddr, size, value)?;
         }
+        self.after_bus_write(bus);
         self.log_store(vaddr, value, size);
         Ok(())
+    }
+
+    /// Call after a CPU store that went through [`Bus::write`]: see [`Cpu::code_written`].
+    #[inline]
+    pub(crate) fn after_bus_write(&mut self, bus: &mut Bus) {
+        if bus.ram.take_code_dropped() {
+            self.code_written();
+        }
+    }
+
+    /// A store dropped decoded instructions, which can invalidate the decoded-page index
+    /// the fast run loop holds for the current page, so make the loop stop after this
+    /// instruction. (Lockstep runs never use the fast loop, and there `irq_poll` has
+    /// Spike-defined meaning.)
+    #[cold]
+    fn code_written(&mut self) {
+        if !self.config.lockstep_irq {
+            self.irq_poll = true;
+        }
     }
 
     /// A load that crosses a page boundary: translate both parts before reading.
@@ -288,7 +348,12 @@ impl Cpu {
     /// Record a load address (virtual, as Spike logs it) in the commit log.
     #[inline]
     pub fn log_load(&mut self, vaddr: u64) {
-        if self.tracing() {
+        self.log_load_t::<true>(vaddr);
+    }
+
+    #[inline(always)]
+    pub(crate) fn log_load_t<const T: bool>(&mut self, vaddr: u64) {
+        if T && self.tracing() {
             self.commit.loads.push(vaddr);
         }
     }
@@ -296,13 +361,19 @@ impl Cpu {
     /// Record a store (virtual address, data, size) in the commit log.
     #[inline]
     pub fn log_store(&mut self, vaddr: u64, value: u64, size: u8) {
-        if self.tracing() {
+        self.log_store_t::<true>(vaddr, value, size);
+    }
+
+    #[inline(always)]
+    pub(crate) fn log_store_t<const T: bool>(&mut self, vaddr: u64, value: u64, size: u8) {
+        if T && self.tracing() {
             let value = if size == 8 { value } else { value & ((1u64 << (8 * size)) - 1) };
             self.commit.stores.push(MemWrite { addr: vaddr, value, size });
         }
     }
 
-    /// Drop any cached decoded instructions (FENCE.I).
+    /// FENCE.I. Nothing to do: every write to RAM drops the decoded instructions it
+    /// overwrites.
     #[inline]
     pub fn flush_icache(&mut self) {}
 
@@ -318,7 +389,7 @@ impl Cpu {
     ///
     /// In the normal profile, interrupts are polled on entry and then only where
     /// interrupt state can change: after Zicsr instructions, MRET, SRET, WFI, traps, and
-    /// accesses that leave the TLB fast path (which includes every device access).
+    /// device accesses. Stores that drop decoded instructions also end the inner loop.
     /// Device lines change only during device accesses or between calls to `run`, so
     /// this is exact.
     pub fn run(&mut self, bus: &mut Bus, max: u64) -> u64 {
@@ -332,7 +403,7 @@ impl Cpu {
         }
         let mut retired = 0;
         for _ in 0..max {
-            match self.step_impl(bus, false) {
+            match self.step_general(bus, false) {
                 StepResult::Retired => retired += 1,
                 StepResult::Trapped(_) => {}
                 StepResult::Waiting => break,
@@ -341,10 +412,9 @@ impl Cpu {
         retired
     }
 
-    /// The normal-profile run loop without tracing. Executes straight-line code in an
-    /// inner loop that reuses the current fetch page's translation and batches the
-    /// counter updates; it returns to the outer loop (which polls interrupts) after
-    /// serializing instructions, SFENCE.VMA, traps, and device accesses.
+    /// The normal-profile run loop without tracing. Straight-line code runs in
+    /// [`Cpu::run_straight`]; this outer loop polls interrupts and sends everything the
+    /// inner loop cannot handle through [`Cpu::step_general`].
     fn run_fast(&mut self, bus: &mut Bus, max: u64) -> u64 {
         self.irq_poll = true;
         let mut steps = 0u64;
@@ -360,61 +430,102 @@ impl Cpu {
             if self.waiting {
                 break;
             }
-            let mut cur_tag = u64::MAX;
-            let mut cur_off = 0u64;
-            let mut pending = 0u64;
-            while steps < max {
-                steps += 1;
-                let pc = self.pc;
-                let tag = (pc >> 12) | self.mmu.fetch_ctx;
-                let cached = if tag == cur_tag {
-                    let off = (cur_off + (pc & 0xfff)) as usize;
-                    match bus.ram.cached_code(off) {
-                        Some(slot) => Some((slot.insn, slot.raw)),
-                        None => exec::fill_code(bus, pc, off),
-                    }
-                } else {
-                    None
-                };
-                let (insn, raw) = match cached {
-                    Some(x) => x,
-                    None => match exec::fetch_decoded(self, bus) {
-                        Ok(x) => {
-                            if let Some(off) = self.mmu.lookup(pc, Access::Fetch) {
-                                cur_tag = tag;
-                                cur_off = off;
-                            }
-                            x
-                        }
-                        Err(e) => {
-                            self.trap_exception(e, pc);
-                            break;
-                        }
-                    },
-                };
-                if insn.op.is_serializing() {
-                    self.csr.add_retired(pending);
-                    retired += pending;
-                    pending = 0;
-                    if let StepResult::Retired = self.step_serializing(bus, insn, raw) {
+            let (n, exit) = self.run_straight(bus, max - steps);
+            self.csr.add_retired(n);
+            steps += n;
+            retired += n;
+            match exit {
+                FastExit::Stop => {}
+                FastExit::Trap(e) => {
+                    self.trap_exception(e, self.pc);
+                    steps += 1;
+                }
+                FastExit::Step => {
+                    steps += 1;
+                    if let StepResult::Retired = self.step_general(bus, false) {
                         retired += 1;
                     }
-                    break;
-                }
-                if let Err(e) = exec::execute(self, bus, insn, raw) {
-                    self.trap_exception(e, pc);
-                    break;
-                }
-                pending += 1;
-                // A device access or SFENCE.VMA: re-poll and re-translate.
-                if self.irq_poll || insn.op == decode::Op::SfenceVma {
-                    break;
                 }
             }
-            self.csr.add_retired(pending);
-            retired += pending;
         }
         retired
+    }
+
+    /// Execute straight-line code from the decoded-instruction cache, with the pc in a
+    /// local. Stops after `budget` instructions; when `irq_poll` is set (device accesses,
+    /// stores that drop decoded instructions); before an instruction that needs the
+    /// general step path (`Op::is_slow`, or a fetch that misses the TLB); or at an
+    /// exception, leaving `self.pc` at the faulting instruction. Returns the number of
+    /// instructions retired, which the caller adds to the counters. The fetch context and
+    /// TLB cannot change inside the loop: everything that changes them is a slow op or a
+    /// trap.
+    #[inline(always)]
+    fn run_straight(&mut self, bus: &mut Bus, budget: u64) -> (u64, FastExit) {
+        let mut pc = self.pc;
+        let mut page = u64::MAX;
+        let mut base = 0usize;
+        // Slot of `pc`. Straight-line code advances it by the instruction size, so the
+        // next fetch does not wait for the pc to be recomputed from the decoded size.
+        let mut slot = 0usize;
+        let mut n = 0u64;
+        let exit = loop {
+            if pc >> 12 != page {
+                let Some(off) = self.mmu.lookup(pc, Access::Fetch) else {
+                    break FastExit::Step;
+                };
+                base = bus.ram.code_page_base(off as usize);
+                if bus.ram.take_code_page_added() {
+                    self.mmu.flush_store();
+                }
+                page = pc >> 12;
+                slot = base | ((pc & 0xfff) >> 1) as usize;
+            }
+            let insn = bus.ram.code(slot);
+            if insn.op.is_slow() {
+                if self.decode_uncached(bus, insn.op, pc) {
+                    continue;
+                }
+                break FastExit::Step;
+            }
+            let size = insn.size();
+            match exec::execute::<false>(self, bus, insn, pc) {
+                Ok(next) => {
+                    // A page change is caught at the top of the loop.
+                    if next == pc.wrapping_add(size) {
+                        slot += (size >> 1) as usize;
+                    } else {
+                        slot = base | ((next & 0xfff) >> 1) as usize;
+                    }
+                    pc = next;
+                }
+                Err(e) => break FastExit::Trap(e),
+            }
+            n += 1;
+            if self.irq_poll || n == budget {
+                break FastExit::Stop;
+            }
+        };
+        self.pc = pc;
+        (n, exit)
+    }
+
+    /// For an `Uncached` slot at `pc` (in a page the fetch TLB maps), decode and cache the
+    /// instruction. Returns true if the slot now holds an instruction the fast loop can
+    /// execute; false sends it to the general step path.
+    #[cold]
+    fn decode_uncached(&mut self, bus: &mut Bus, op: decode::Op, pc: u64) -> bool {
+        if op != decode::Op::Uncached {
+            return false;
+        }
+        let Some(page) = self.mmu.lookup(pc, Access::Fetch) else {
+            return false;
+        };
+        let off = page as usize + (pc & 0xfff) as usize;
+        let filled = exec::fill_code(bus, pc, off);
+        if bus.ram.take_code_page_added() {
+            self.mmu.flush_store();
+        }
+        matches!(filled, Some((i, _)) if !i.op.is_slow())
     }
 
     /// Check for interrupts: wake from WFI on any locally enabled pending interrupt
@@ -437,11 +548,13 @@ impl Cpu {
     pub fn step(&mut self, bus: &mut Bus) -> StepResult {
         mmu::update_ctx(self);
         let always = !self.config.lockstep_irq;
-        self.step_impl(bus, always)
+        self.step_general(bus, always)
     }
 
-    #[inline(always)]
-    fn step_impl(&mut self, bus: &mut Bus, always_poll: bool) -> StepResult {
+    /// One step that handles every case, including tracing. Polls interrupts first when
+    /// `always_poll` or `irq_poll` is set.
+    #[inline(never)]
+    fn step_general(&mut self, bus: &mut Bus, always_poll: bool) -> StepResult {
         self.wfi_retired = false;
         if always_poll || self.irq_poll {
             self.irq_poll = false;
@@ -464,8 +577,9 @@ impl Cpu {
             self.commit.clear();
         }
         let mode = self.mode;
-        if let Err(e) = exec::execute(self, bus, insn, raw) {
-            return self.trap_exception(e, pc);
+        match exec::execute::<true>(self, bus, insn, pc) {
+            Ok(next) => self.pc = next,
+            Err(e) => return self.trap_exception(e, pc),
         }
         self.csr.retire();
         if self.tracing() {

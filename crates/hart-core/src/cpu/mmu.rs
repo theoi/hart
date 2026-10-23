@@ -6,6 +6,10 @@
 //! 4 KiB is permitted by PMP for that access, so a hit needs no further checks.
 //! Everything else (MMIO, partial PMP coverage, misses) takes the slow path.
 //!
+//! The store TLB never maps a RAM page that holds decoded instructions, so a store hit
+//! needs no decoded-instruction invalidation. When the CPU gives a page decoded
+//! instructions it flushes the store TLB ([`Mmu::flush_store`]).
+//!
 //! A/D bits follow Svade: a leaf PTE with A = 0, or D = 0 on a store, raises a page fault
 //! and the hart never writes PTEs.
 
@@ -52,13 +56,18 @@ const PTE_RESERVED: u64 = 0x3ff << 54;
 const PTE_PPN_MASK: u64 = (1 << 44) - 1;
 
 pub const TLB_SIZE: usize = 1024;
+/// Never matches: valid tags have bit 63 clear.
 const INVALID: u64 = u64::MAX;
-/// Context bits sit above the 52-bit virtual page number in a tag.
+/// Context bits (4) sit above the 52-bit virtual page number in a tag.
 const CTX_SHIFT: u64 = 52;
+/// The flush generation (7 bits) sits above the context bits.
+const GEN_SHIFT: u64 = 56;
+const GEN_MAX: u64 = 0x7f;
+const GEN_FIELD: u64 = GEN_MAX << GEN_SHIFT;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TlbEntry {
-    /// `vpn | ctx`, or `INVALID`.
+    /// `vpn | ctx | generation`, or `INVALID`.
     pub tag: u64,
     /// Byte offset of the physical page in RAM.
     pub off: u64,
@@ -73,10 +82,17 @@ pub struct Mmu {
     pub fetch: Tlb,
     pub load: Tlb,
     pub store: Tlb,
-    /// Tag context for fetches (current mode).
+    /// Tag context for fetches (current mode), with the generation.
     pub fetch_ctx: u64,
-    /// Tag context for loads and stores (effective mode, SUM, MXR).
+    /// Tag context for loads (effective mode, SUM, MXR), with the generation.
     pub data_ctx: u64,
+    /// Tag context for stores: the `data_ctx` bits with the store generation.
+    pub store_ctx: u64,
+    /// Flush generation, part of every fetch and load tag: a flush bumps it, which
+    /// retires all entries at once. The tables are cleared only when it wraps.
+    gen: u64,
+    /// Generation of the store TLB, which can also be flushed alone.
+    store_gen: u64,
 }
 
 impl Default for Mmu {
@@ -88,14 +104,38 @@ impl Default for Mmu {
 impl Mmu {
     pub fn new() -> Self {
         let t = || -> Tlb { Box::new([EMPTY; TLB_SIZE]) };
-        Mmu { fetch: t(), load: t(), store: t(), fetch_ctx: 3 << CTX_SHIFT, data_ctx: 3 << CTX_SHIFT }
+        Mmu {
+            fetch: t(),
+            load: t(),
+            store: t(),
+            fetch_ctx: 3 << CTX_SHIFT,
+            data_ctx: 3 << CTX_SHIFT,
+            store_ctx: 3 << CTX_SHIFT,
+            gen: 0,
+            store_gen: 0,
+        }
     }
 
     /// Drop every cached translation (SFENCE.VMA, satp and PMP writes).
     pub fn flush(&mut self) {
-        self.fetch.fill(EMPTY);
-        self.load.fill(EMPTY);
-        self.store.fill(EMPTY);
+        self.gen = (self.gen + 1) & GEN_MAX;
+        if self.gen == 0 {
+            self.fetch.fill(EMPTY);
+            self.load.fill(EMPTY);
+        }
+        let g = self.gen << GEN_SHIFT;
+        self.fetch_ctx = (self.fetch_ctx & !GEN_FIELD) | g;
+        self.data_ctx = (self.data_ctx & !GEN_FIELD) | g;
+        self.flush_store();
+    }
+
+    /// Drop every cached store translation.
+    pub fn flush_store(&mut self) {
+        self.store_gen = (self.store_gen + 1) & GEN_MAX;
+        if self.store_gen == 0 {
+            self.store.fill(EMPTY);
+        }
+        self.store_ctx = (self.store_ctx & !GEN_FIELD) | (self.store_gen << GEN_SHIFT);
     }
 
     /// RAM offset of the page holding `vaddr`, if the TLB for this access type has it.
@@ -105,7 +145,7 @@ impl Mmu {
         let (tlb, ctx) = match access {
             Access::Fetch => (&self.fetch, self.fetch_ctx),
             Access::Load => (&self.load, self.data_ctx),
-            Access::Store => (&self.store, self.data_ctx),
+            Access::Store => (&self.store, self.store_ctx),
         };
         let e = &tlb[vpn as usize & (TLB_SIZE - 1)];
         if e.tag == vpn | ctx {
@@ -120,7 +160,7 @@ impl Mmu {
         let (tlb, ctx) = match access {
             Access::Fetch => (&mut self.fetch, self.fetch_ctx),
             Access::Load => (&mut self.load, self.data_ctx),
-            Access::Store => (&mut self.store, self.data_ctx),
+            Access::Store => (&mut self.store, self.store_ctx),
         };
         tlb[vpn as usize & (TLB_SIZE - 1)] = TlbEntry { tag: vpn | ctx, off };
     }
@@ -134,8 +174,11 @@ pub fn update_ctx(cpu: &mut Cpu) {
     let eff = if m & csr::MSTATUS_MPRV != 0 { (m >> csr::MSTATUS_MPP_SHIFT) & 3 } else { cpu.mode as u64 };
     let sum = (m & csr::MSTATUS_SUM != 0) as u64;
     let mxr = (m & csr::MSTATUS_MXR != 0) as u64;
-    cpu.mmu.fetch_ctx = (cpu.mode as u64) << CTX_SHIFT;
-    cpu.mmu.data_ctx = (eff | (sum << 2) | (mxr << 3)) << CTX_SHIFT;
+    let data = (eff | (sum << 2) | (mxr << 3)) << CTX_SHIFT;
+    let g = cpu.mmu.gen << GEN_SHIFT;
+    cpu.mmu.fetch_ctx = ((cpu.mode as u64) << CTX_SHIFT) | g;
+    cpu.mmu.data_ctx = data | g;
+    cpu.mmu.store_ctx = data | (cpu.mmu.store_gen << GEN_SHIFT);
 }
 
 /// The privilege mode used for translation and PMP checks of this access.
@@ -178,10 +221,6 @@ pub fn translate(cpu: &mut Cpu, bus: &mut Bus, vaddr: u64, size: u8, access: Acc
 
 #[cold]
 fn translate_slow(cpu: &mut Cpu, bus: &mut Bus, vaddr: u64, size: u8, access: Access) -> Result<u64, Exception> {
-    // Device accesses always come through here and can change interrupt lines.
-    if !cpu.config.lockstep_irq {
-        cpu.irq_poll = true;
-    }
     let mode = effective_mode(cpu, access);
     let paddr = if mode == Priv::Machine || cpu.csr.satp_mode() != csr::SATP_MODE_SV39 {
         vaddr
@@ -192,9 +231,17 @@ fn translate_slow(cpu: &mut Cpu, bus: &mut Bus, vaddr: u64, size: u8, access: Ac
         return Err(access.access_fault(vaddr));
     }
     let ppage = paddr & !0xfff;
-    if let Some(off) = bus.ram.offset(ppage, 4096) {
-        if cpu.pmp.check(ppage, 4096, access, mode) {
-            cpu.mmu.insert(vaddr, access, off as u64);
+    match bus.ram.offset(ppage, 4096) {
+        Some(off) => {
+            if cpu.pmp.check(ppage, 4096, access, mode) && (access != Access::Store || !bus.ram.has_code(off)) {
+                cpu.mmu.insert(vaddr, access, off as u64);
+            }
+        }
+        // A device access can change interrupt lines: poll before the next instruction.
+        None => {
+            if !cpu.config.lockstep_irq {
+                cpu.irq_poll = true;
+            }
         }
     }
     Ok(paddr)

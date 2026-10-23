@@ -107,8 +107,9 @@ pub enum Op {
     FenceI,
     Ecall,
     Ebreak,
+    // SfenceVma through Uncached must stay contiguous, with Mret through Csrrci inside:
+    // see `Op::is_serializing` and `Op::is_slow`.
     SfenceVma,
-    // Mret through Csrrci must stay contiguous: see `Op::is_serializing`.
     Mret,
     Sret,
     Wfi,
@@ -119,6 +120,8 @@ pub enum Op {
     Csrrwi,
     Csrrsi,
     Csrrci,
+    /// An empty slot in the decoded-instruction cache. Never produced by `decode`.
+    Uncached,
     /// F/D instruction, dispatched to `cpu::fp`. `imm` holds the 32-bit encoding.
     Fp,
 }
@@ -129,6 +132,13 @@ impl Op {
     #[inline(always)]
     pub fn is_serializing(self) -> bool {
         (self as u8).wrapping_sub(Op::Mret as u8) <= Op::Csrrci as u8 - Op::Mret as u8
+    }
+
+    /// SFENCE.VMA, the serializing ops, and `Uncached`: the ops the fast run loop leaves
+    /// to the general step path.
+    #[inline(always)]
+    pub fn is_slow(self) -> bool {
+        (self as u8).wrapping_sub(Op::SfenceVma as u8) <= Op::Uncached as u8 - Op::SfenceVma as u8
     }
 
     #[inline]
@@ -147,8 +157,26 @@ pub struct Insn {
     pub imm: i32,
 }
 
+/// `decode` stores the encoding length in bits 7:5 of `rs1`, above the 5-bit register
+/// number (2 for compressed instructions, 4 otherwise), so executors read `rs1 & 31`.
+const RS1_LEN_SHIFT: u32 = 5;
+
 impl Insn {
     pub const ILLEGAL: Insn = Insn { op: Op::Illegal, rd: 0, rs1: 0, rs2: 0, imm: 0 };
+    pub const UNCACHED: Insn = Insn { op: Op::Uncached, rd: 0, rs1: 0, rs2: 0, imm: 0 };
+
+    /// Encoding length in bytes: 2 for compressed instructions, otherwise 4. Only for
+    /// instructions from `decode`.
+    #[inline(always)]
+    pub fn size(self) -> u64 {
+        (self.rs1 >> RS1_LEN_SHIFT) as u64
+    }
+
+    /// The `rs1` register number (or the 5-bit CSR immediate).
+    #[inline(always)]
+    pub fn rs1(self) -> usize {
+        (self.rs1 & 31) as usize
+    }
 
     #[inline]
     const fn new(op: Op, rd: u32, rs1: u32, rs2: u32, imm: i32) -> Insn {
@@ -160,11 +188,9 @@ impl Insn {
 /// encoding in the low 16 bits (upper bits ignored).
 #[inline]
 pub fn decode(raw: u32) -> Insn {
-    if raw & 3 == 3 {
-        decode32(raw)
-    } else {
-        decode16(raw as u16)
-    }
+    let (mut i, len) = if raw & 3 == 3 { (decode32(raw), 4) } else { (decode16(raw as u16), 2) };
+    i.rs1 |= len << RS1_LEN_SHIFT;
+    i
 }
 
 #[inline]
@@ -552,26 +578,36 @@ mod tests {
         decode(raw)
     }
 
+    /// The expected decode of a 32-bit instruction.
+    fn w(op: Op, rd: u32, rs1: u32, rs2: u32, imm: i32) -> Insn {
+        Insn { rs1: rs1 as u8 | 4 << RS1_LEN_SHIFT, ..Insn::new(op, rd, rs1, rs2, imm) }
+    }
+
+    /// The expected decode of a compressed instruction.
+    fn c(op: Op, rd: u32, rs1: u32, rs2: u32, imm: i32) -> Insn {
+        Insn { rs1: rs1 as u8 | 2 << RS1_LEN_SHIFT, ..Insn::new(op, rd, rs1, rs2, imm) }
+    }
+
     #[test]
     fn base_encodings() {
         // addi a0, a0, -1
-        assert_eq!(d(0xfff5_0513), Insn::new(Op::Addi, 10, 10, 0, -1));
+        assert_eq!(d(0xfff5_0513), w(Op::Addi, 10, 10, 0, -1));
         // lui t0, 0x80000
-        assert_eq!(d(0x8000_02b7), Insn::new(Op::Lui, 5, 0, 0, 0x8000_0000u32 as i32));
+        assert_eq!(d(0x8000_02b7), w(Op::Lui, 5, 0, 0, 0x8000_0000u32 as i32));
         // jal ra, -4  (0xffdff0ef)
-        assert_eq!(d(0xffdf_f0ef), Insn::new(Op::Jal, 1, 0, 0, -4));
+        assert_eq!(d(0xffdf_f0ef), w(Op::Jal, 1, 0, 0, -4));
         // bne a0, a1, -8 (0xfeb51ce3)
-        assert_eq!(d(0xfeb5_1ce3), Insn::new(Op::Bne, 0, 10, 11, -8));
+        assert_eq!(d(0xfeb5_1ce3), w(Op::Bne, 0, 10, 11, -8));
         // sd ra, 8(sp) (0x00113423)
-        assert_eq!(d(0x0011_3423), Insn::new(Op::Sd, 0, 2, 1, 8));
+        assert_eq!(d(0x0011_3423), w(Op::Sd, 0, 2, 1, 8));
         // srai a0, a0, 63 (0x43f55513)
-        assert_eq!(d(0x43f5_5513), Insn::new(Op::Srai, 10, 10, 0, 63));
+        assert_eq!(d(0x43f5_5513), w(Op::Srai, 10, 10, 0, 63));
         // csrrw zero, mtvec, t0 (0x30529073)
-        assert_eq!(d(0x3052_9073), Insn::new(Op::Csrrw, 0, 5, 0, 0x305));
+        assert_eq!(d(0x3052_9073), w(Op::Csrrw, 0, 5, 0, 0x305));
         // sfence.vma zero, zero
         assert_eq!(d(0x1200_0073).op, Op::SfenceVma);
         // amoswap.d.aqrl a0, a1, (a2)
-        assert_eq!(d(0x0eb6_352f), Insn::new(Op::AmoswapD, 10, 12, 11, 0));
+        assert_eq!(d(0x0eb6_352f), w(Op::AmoswapD, 10, 12, 11, 0));
         assert_eq!(d(0x0000_0000).op, Op::Illegal);
         assert_eq!(d(0xffff_ffff).op, Op::Illegal);
     }
@@ -579,33 +615,36 @@ mod tests {
     #[test]
     fn compressed_encodings() {
         // c.addi4spn s0, sp, 16 (0x0800)
-        assert_eq!(d(0x0800), Insn::new(Op::Addi, 8, 2, 0, 16));
+        assert_eq!(d(0x0800), c(Op::Addi, 8, 2, 0, 16));
         assert_eq!(d(0x0000).op, Op::Illegal);
         // c.li a0, -1 (0x557d)
-        assert_eq!(d(0x557d), Insn::new(Op::Addi, 10, 0, 0, -1));
+        assert_eq!(d(0x557d), c(Op::Addi, 10, 0, 0, -1));
         // c.addi16sp sp, -64 (0x7139)
-        assert_eq!(d(0x7139), Insn::new(Op::Addi, 2, 2, 0, -64));
+        assert_eq!(d(0x7139), c(Op::Addi, 2, 2, 0, -64));
         // c.lui a0, 0xfffff (0x757d) -> lui a0, -4096
-        assert_eq!(d(0x757d), Insn::new(Op::Lui, 10, 0, 0, -4096));
+        assert_eq!(d(0x757d), c(Op::Lui, 10, 0, 0, -4096));
         // c.j -2 (0xbffd)
-        assert_eq!(d(0xbffd), Insn::new(Op::Jal, 0, 0, 0, -2));
+        assert_eq!(d(0xbffd), c(Op::Jal, 0, 0, 0, -2));
         // c.beqz a0, +8 (0xc501)
-        assert_eq!(d(0xc501), Insn::new(Op::Beq, 0, 10, 0, 8));
+        assert_eq!(d(0xc501), c(Op::Beq, 0, 10, 0, 8));
         // c.ldsp ra, 8(sp) (0x60a2)
-        assert_eq!(d(0x60a2), Insn::new(Op::Ld, 1, 2, 0, 8));
+        assert_eq!(d(0x60a2), c(Op::Ld, 1, 2, 0, 8));
         // c.sdsp ra, 8(sp) (0xe406)
-        assert_eq!(d(0xe406), Insn::new(Op::Sd, 0, 2, 1, 8));
+        assert_eq!(d(0xe406), c(Op::Sd, 0, 2, 1, 8));
         // c.jr ra (0x8082)
-        assert_eq!(d(0x8082), Insn::new(Op::Jalr, 0, 1, 0, 0));
+        assert_eq!(d(0x8082), c(Op::Jalr, 0, 1, 0, 0));
         // c.mv a0, a1 (0x852e)
-        assert_eq!(d(0x852e), Insn::new(Op::Add, 10, 0, 11, 0));
+        assert_eq!(d(0x852e), c(Op::Add, 10, 0, 11, 0));
         // c.ebreak (0x9002)
         assert_eq!(d(0x9002).op, Op::Ebreak);
         // c.subw a0, a1 (0x9d0d)
-        assert_eq!(d(0x9d0d), Insn::new(Op::Subw, 10, 10, 11, 0));
+        assert_eq!(d(0x9d0d), c(Op::Subw, 10, 10, 11, 0));
         // c.fld fa0, 8(a1) (0x2588) -> fld fa0, 8(a1) = 0x0085b507
         assert_eq!(d(0x2588).imm as u32, 0x0085_b507);
         // c.fsdsp fa0, 16(sp) (0xa82a) -> fsd fa0, 16(sp) = 0x00a13827
         assert_eq!(d(0xa82a).imm as u32, 0x00a1_3827);
+        assert_eq!(d(0x0800).size(), 2);
+        assert_eq!(d(0xfff5_0513).size(), 4);
+        assert_eq!(d(0x2588).size(), 2);
     }
 }
