@@ -683,6 +683,17 @@ mod tests {
     }
 
     #[test]
+    fn reserved_tvec_modes_clear_bit_1() {
+        let mut cpu = Cpu::new(0x8000_0000);
+        let bus = Bus::new(0x8000_0000, 0x1000);
+        write(&mut cpu, &bus, MTVEC, 0x8000_0001, 0).unwrap();
+        write(&mut cpu, &bus, MTVEC, 0x8000_1002, 0).unwrap();
+        assert_eq!(read(&cpu, &bus, MTVEC, 0), Ok(0x8000_1000));
+        write(&mut cpu, &bus, STVEC, 0x207, 0).unwrap();
+        assert_eq!(read(&cpu, &bus, STVEC, 0), Ok(0x205));
+    }
+
+    #[test]
     fn default_profile_pmp_resets_off() {
         let cpu = Cpu::new(0x8000_0000);
         let bus = Bus::new(0x8000_0000, 0x1000);

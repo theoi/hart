@@ -706,4 +706,18 @@ mod tests {
         cpu.step(&mut bus);
         assert_eq!(cpu.x[5], 0);
     }
+
+    #[test]
+    fn upper_half_of_a_fetch_is_pmp_checked_on_its_own() {
+        // jalr x0, 0(x1) at RAM+0x106, straddling two locked NA4 entries:
+        // [RAM+0x104, RAM+0x108) RWX and [RAM+0x108, RAM+0x10c) no access.
+        let (mut cpu, mut bus) = machine(&[]);
+        bus.write_bytes(RAM + 0x106, &0x0000_8067u32.to_le_bytes()).unwrap();
+        csr::write(&mut cpu, &bus, csr::PMPADDR0, (RAM + 0x104) >> 2, 0).unwrap();
+        csr::write(&mut cpu, &bus, csr::PMPADDR0 + 1, (RAM + 0x108) >> 2, 0).unwrap();
+        csr::write(&mut cpu, &bus, csr::PMPCFG0, 0x97 | (0x90 << 8), 0).unwrap();
+        cpu.pc = RAM + 0x106;
+        assert!(matches!(cpu.step(&mut bus), StepResult::Trapped(_)));
+        assert_eq!((cpu.csr.mcause, cpu.csr.mepc, cpu.csr.mtval), (1, RAM + 0x106, RAM + 0x108));
+    }
 }

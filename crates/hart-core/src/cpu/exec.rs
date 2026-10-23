@@ -6,31 +6,22 @@ use super::{fp, Access, Cpu, Exception, ExceptionCause, Priv};
 use crate::bus::Bus;
 
 /// Fetch the instruction at `cpu.pc`. Returns the raw bits (16-bit encodings in the low
-/// half). A 32-bit instruction that crosses a page boundary is fetched in two parts.
+/// half). The two halves of a 32-bit instruction are translated and PMP-checked
+/// separately, so a fault in the upper half (across a page or PMP-region boundary)
+/// reports `pc + 2`.
 #[inline]
 pub fn fetch(cpu: &mut Cpu, bus: &mut Bus) -> Result<u32, Exception> {
     let pc = cpu.pc;
-    if pc & 0xfff != 0xffe {
-        let pa = cpu.translate(bus, pc, 2, Access::Fetch)?;
-        let lo = bus.read(pa, 2).map_err(|_| Access::Fetch.access_fault(pc))? as u32;
-        if lo & 3 != 3 {
-            return Ok(lo);
-        }
-        let hi = bus.read(pa + 2, 2).map_err(|_| Access::Fetch.access_fault(pc))? as u32;
-        Ok(lo | (hi << 16))
-    } else {
-        let pa = cpu.translate(bus, pc, 2, Access::Fetch)?;
-        let lo = bus.read(pa, 2).map_err(|_| Access::Fetch.access_fault(pc))? as u32;
-        if lo & 3 != 3 {
-            return Ok(lo);
-        }
-        let pc2 = pc.wrapping_add(2);
-        let pa2 = cpu.translate(bus, pc2, 2, Access::Fetch)?;
-        let hi = bus.read(pa2, 2).map_err(|_| Access::Fetch.access_fault(pc2))? as u32;
-        Ok(lo | (hi << 16))
+    let pa = cpu.translate(bus, pc, 2, Access::Fetch)?;
+    let lo = bus.read(pa, 2).map_err(|_| Access::Fetch.access_fault(pc))? as u32;
+    if lo & 3 != 3 {
+        return Ok(lo);
     }
+    let pc2 = pc.wrapping_add(2);
+    let pa2 = cpu.translate(bus, pc2, 2, Access::Fetch)?;
+    let hi = bus.read(pa2, 2).map_err(|_| Access::Fetch.access_fault(pc2))? as u32;
+    Ok(lo | (hi << 16))
 }
-
 /// Fetch and decode the instruction at `cpu.pc`, using the decoded-instruction cache
 /// for RAM pages reachable through the fetch TLB. Also returns the raw bits.
 #[inline]

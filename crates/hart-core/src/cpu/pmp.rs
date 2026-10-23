@@ -106,7 +106,7 @@ impl Pmp {
                         continue;
                     }
                     let mut c = (value >> (8 * k)) as u8 & (R | W | X | A_MASK | L);
-                    // R=0, W=1 is reserved; hart clears W.
+                    // R=0, W=1 is reserved; hart clears W and keeps X, as Spike does.
                     if c & R == 0 {
                         c &= !W;
                     }
@@ -223,6 +223,14 @@ mod tests {
         // Locked: further writes are ignored.
         p.write_csr(0x3a0, 0);
         assert_eq!(p.cfg(0), (A_NA4 << A_SHIFT) | R | L);
+    }
+
+    #[test]
+    fn reserved_write_only_clears_w_and_keeps_x() {
+        let mut p = Pmp::new();
+        p.write_csr(0x3a0, ((A_NA4 << A_SHIFT) | W | X) as u64 | (((A_NA4 << A_SHIFT) | W) as u64) << 8);
+        assert_eq!(p.cfg(0), (A_NA4 << A_SHIFT) | X);
+        assert_eq!(p.cfg(1), A_NA4 << A_SHIFT);
     }
 
     #[test]

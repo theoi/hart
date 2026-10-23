@@ -2,9 +2,21 @@
 
 Where the RISC-V specifications leave behavior to the implementation, hart makes the
 choices below. Spike's choices are matched where practical, so that differential testing
-against Spike needs no special cases. The reference Spike configuration is
+against Spike needs no special cases. Where Spike and the Sail model (the source of ACT4's
+expected results) disagree on spec-reserved behavior, hart follows Spike, and the row says
+what Sail does instead. The reference Spike configuration is
 `--isa=rv64imafdc_zicsr_zifencei_zicntr_zihpm_zicclsm_svade --pmpregions=16
 --pmpgranularity=4 --triggers=0`.
+
+## Specifications
+
+hart implements the RISC-V Instruction Set Manual, ratified release 20250508 (tag
+`20250508` of [riscv/riscv-isa-manual](https://github.com/riscv/riscv-isa-manual/releases/tag/20250508)).
+
+| Volume | Version and modules |
+| --- | --- |
+| Volume I: Unprivileged Architecture | 20250508. RV64I 2.1, M 2.0, A 2.1 (Zaamo 1.0, Zalrsc 1.0), F 2.2, D 2.2, C 2.0 (Zca 1.0, Zcd 1.0), Zicsr 2.0, Zifencei 2.0, Zicntr 2.0, Zihpm 2.0. |
+| Volume II: Privileged Architecture | 20250508. Machine-Level ISA 1.13 and Supervisor-Level ISA 1.13, with Sv39, Svade, and Svbare. The ACT4 configuration runs Sail as Privileged ISA 1.13. |
 
 ## Identification
 
@@ -22,7 +34,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | `mstatus.MPP` | WARL. Writing the reserved value 2 stores 0 (U). |
 | `mstatus.FS` | All four states writable. `SD` reads 1 when FS is Dirty. `VS` and `XS` are 0. |
 | `mstatus.UBE`, `SBE`, `MBE` | 0 (little-endian only). |
-| `mtvec`, `stvec` | Direct (0) and Vectored (1) modes. Bit 1 is read-only zero, so writing mode 2 or 3 yields 0 or 1. |
+| `mtvec`, `stvec` | Direct (0) and Vectored (1) modes, base aligned to 4 bytes in both. MODE values 2 and 3 are reserved: bit 1 is read-only zero, so writing mode 2 or 3 yields 0 or 1, as in Spike. Sail (`Xtvec_Ignore`) instead keeps the old mode. |
 | `mepc`, `sepc` | Bit 0 reads zero (C is always enabled, so IALIGN is 16). |
 | `mcause`, `scause` | Any value is stored (WLRL). |
 | `medeleg` | Bits 1–9, 12, 13, 15, and 19 are writable (mask `0x8b3fe`, as in Spike). Bit 0 is read-only zero because C makes misaligned fetches impossible. Ecall from M (11) cannot be delegated. |
@@ -53,13 +65,14 @@ against Spike needs no special cases. The reference Spike configuration is
 | Illegal instruction | The instruction bits (16 bits for compressed encodings). |
 | Breakpoint (EBREAK, C.EBREAK) | The pc of the instruction. |
 | Ecall | 0. |
-| Access and page faults | The faulting virtual address. For an access that crosses a page boundary (a 32-bit instruction fetch, or a misaligned load or store), the address of the part that faults, so a fault on the second page reports the start of that page. |
+| Access and page faults | The faulting virtual address. The two halves of a 32-bit instruction are translated and PMP-checked separately, so a fault in the upper half (across a page or a PMP-region boundary) reports pc + 2, while `xepc` is the instruction's pc. A misaligned load or store that crosses a page reports the start of the second page when that page faults. |
 | Instruction address misaligned | Never raised (C is always enabled). |
 
 ## Memory access
 
 | Item | Choice |
 | --- | --- |
+| Physical addresses | 56 bits: the PPN in `satp` and in PTEs is 44 bits, and `pmpaddr` holds address bits 55:2. An address with no RAM or device behind it raises an access fault. |
 | Misaligned loads and stores | Supported in hardware for RAM (Zicclsm), including accesses that cross a page. Both pages are translated and PMP-checked before any byte is accessed. |
 | Misaligned access to a device region | Access fault when the access stays within one page. An access that crosses a page boundary is split into single-byte accesses after both pages are translated and checked. |
 | Misaligned AMO, LR, SC | Access fault: load access fault (5) for LR, store/AMO access fault (7) for SC and AMOs. Matches Spike and Sail's RVA20S64 configuration. |
@@ -76,7 +89,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | `satp.ASID` | 16 bits, writable. ASIDs are not used to tag TLB entries: every accepted `satp` write flushes the TLB. |
 | A and D bits | Svade: a leaf PTE with A = 0, or D = 0 on a store or AMO, raises a page fault. Hardware never writes PTEs. |
 | Reserved PTE bits | Bits 63:54 must be zero (no Svnapot or Svpbmt), otherwise page fault. A non-leaf PTE with A, D, or U set raises a page fault. |
-| TLB | 1024 entries per access type (fetch, load, store), direct-mapped by virtual page number and tagged with the translation context (privilege mode, MPRV/MPP, SUM, MXR), so mode and `mstatus` changes need no flush. Flushed by SFENCE.VMA (any operands), `satp` writes, and PMP writes. |
+| TLB | 1024 entries per access type (fetch, load, store), direct-mapped by virtual page number and tagged with the translation context (privilege mode, MPRV/MPP, SUM, MXR), so mode and `mstatus` changes need no flush. Flushed by SFENCE.VMA (any operands), `satp` writes, and PMP writes. An entry is created only for a RAM page that PMP permits in full for that access type, and a 32-bit instruction that crosses a page is never cached in decoded form, so neither a cached translation nor a cached instruction spans a permission boundary. |
 
 ## PMP
 
@@ -85,7 +98,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Entries | 16. `pmpcfg0` and `pmpcfg2` exist; odd `pmpcfg` CSRs raise illegal instruction. `pmpaddr16`–`63` and the upper `pmpcfg` registers read 0. |
 | Reset | All entries off. The lockstep (Spike) profile (`CpuConfig::pmp_reset_all_access`) resets entry 0 to NAPOT over all memory with R, W, and X (`pmpcfg0` = 0x1f, `pmpaddr0` = 0x003fffffffffffff), as Spike does. |
 | Granularity | 4 bytes (G = 0). TOR, NA4, and NAPOT are supported. |
-| Reserved R=0, W=1 | Stored as R=0, W=0. |
+| Reserved R=0, W=1 | The combination is reserved. hart stores R=0, W=0 and keeps X (and A and L) as written, as Spike does. Sail (`PMP_ClearPermissions`) also clears X. |
 | Locking | Locked entries ignore writes, as does `pmpaddr[i-1]` when entry `i` is locked TOR. |
 | Page-table walks | Checked as S-mode loads. |
 | Partial matches | An access that only partly overlaps the highest-priority matching entry fails. |
