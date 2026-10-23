@@ -13,9 +13,9 @@ output, warnings) are skipped. Each commit line is compared field by field:
     load addresses (in order), and store address/value/size (in order).
 
 Register writes on one line are compared as a set, because Spike prints them
-from an unordered map. CSR names listed with --drop-csr are removed from both
-logs before comparing (default: mvip, which Spike logs as a side effect of
-mip/sip writes even though the hart profile has no mvip CSR).
+from an unordered map. Every logged CSR is compared. --drop-csr NAME removes
+that CSR from both logs before comparing; nothing is removed by default, and
+the option is meant for investigating a divergence, not for check runs.
 
 At the first difference the comparator classifies it: a line missing from
 TEST, an extra line in TEST, or a field mismatch. It prints a report and exits
@@ -218,7 +218,7 @@ def main():
     ap.add_argument("ref")
     ap.add_argument("test")
     ap.add_argument("--drop-csr", action="append", default=None,
-                    help="CSR name to ignore (repeatable; default: mvip)")
+                    help="CSR name to remove from both logs (repeatable; none by default)")
     ap.add_argument("--limit", type=int, help="compare only the first N commit lines of each log")
     ap.add_argument("--start-pc", type=lambda s: int(s, 0),
                     help="skip lines in each log until the first commit at this pc")
@@ -228,7 +228,7 @@ def main():
                     help="report up to N value-only mismatches before stopping")
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
     args = ap.parse_args()
-    drop = set(args.drop_csr) if args.drop_csr is not None else {"mvip"}
+    drop = set(args.drop_csr or ())
 
     def opener(p):
         return sys.stdin if p == "-" else open(p, encoding="ascii", errors="replace", buffering=1 << 20)

@@ -32,7 +32,6 @@ sys.path.insert(0, HERE)
 import compare  # noqa: E402
 
 HEAD = re.compile(r"^(core\s+\d+: )(\d)( 0x)([0-9a-f]+)( \(0x)([0-9a-f]+)(\))(.*)$")
-IGNORED = {"mvip"}  # compare.py's default dropped CSRs
 
 
 def flip_hex(h, rng):
@@ -86,7 +85,7 @@ def mutate_field(lines, idx, kind, rng):
         p[1] = str((int(p[1]) + 1 + rng.randrange(2)) % 4)
     elif kind in ("xreg", "freg", "csr"):
         want = {"xreg": "x", "freg": "f", "csr": "c"}[kind]
-        cands = [i for i, e in enumerate(ents) if e[0] == want and not ignored(e)]
+        cands = [i for i, e in enumerate(ents) if e[0] == want]
         i = rng.choice(cands)
         toks = list(ents[i][1])
         toks[1] = "0x" + flip_hex(toks[1][2:], rng)
@@ -109,16 +108,11 @@ def mutate_field(lines, idx, kind, rng):
     lines[idx] = join(p, ents)
 
 
-def ignored(entry):
-    """CSR entries that compare.py drops (IGNORED), so mutating them is not a divergence."""
-    return entry[0] == "c" and entry[1][0].split("_", 1)[-1] in IGNORED
-
-
 def eligible(line, kind):
     p = split(line)
     if not p:
         return False
-    kinds = [e[0] for e in entries(p[7]) if not ignored(e)]
+    kinds = [e[0] for e in entries(p[7])]
     need = {"xreg": "x", "xreg-missing": "x", "freg": "f", "csr": "c",
             "load-addr": "load", "store-addr": "store", "store-value": "store"}.get(kind)
     return need is None or need in kinds
@@ -136,7 +130,7 @@ EXPECT = {
 def run(ref_lines, test_lines):
     ref = io.StringIO("\n".join(ref_lines) + "\n")
     test = io.StringIO("\n".join(test_lines) + "\n")
-    return compare.compare(ref, test, IGNORED)
+    return compare.compare(ref, test, set())
 
 
 def main():
@@ -193,7 +187,7 @@ def main():
             if i % 97 == 0:
                 noisy.append("OpenSBI console text that is not a commit line")
         rep = compare.compare(io.StringIO("\n".join(lines) + "\n"),
-                              io.StringIO("\n".join(noisy) + "\n"), IGNORED)
+                              io.StringIO("\n".join(noisy) + "\n"), set())
         ok = rep["result"] == "match"
         summary["controls"].setdefault("interleaved-text", [0, 0])
         summary["controls"]["interleaved-text"][0 if ok else 1] += 1

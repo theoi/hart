@@ -53,18 +53,20 @@ core   0: <priv> 0x<pc:16> (0x<insn:8 or 4>) [<reg> 0x<value>]... [mem 0x<addr>]
   makes `mstatus.FS` dirty adds `c768_mstatus`; `fcsr` writes log `c1_fflags`
   and `c2_frm`; `sstatus` writes log `c768_mstatus`; `sie` writes log `c260_sie`
   and `c772_mie`; `mip`/`sip` writes log `c777_mvip` and `c836_mip`; `mret` and
-  `sret` log `c768_mstatus`. `compare.py` drops `c777_mvip` by default.
+  `sret` log `c768_mstatus`. `compare.py` compares every one of these entries.
 
 ## Comparator
 
 ```sh
-compare.py [--start-pc ADDR] [--end-store TOHOST] [--keep-going N] REF TEST
+compare.py [--start-pc ADDR] [--end-store TOHOST] [--keep-going N] [--drop-csr NAME] REF TEST
 ```
 
 `REF` is the Spike log, `TEST` the hart log; either can be a file, `-`, or a
 named pipe. `--start-pc 0x80000000` skips each simulator's reset code;
 `--end-store` stops at the HTIF `tohost` store so the post-exit spin loop is
-not compared. Exit status: 0 match, 1 divergence, 2 malformed log.
+not compared. `--drop-csr NAME` removes one CSR from both logs; nothing is
+removed by default, and the check runs never use it. Exit status: 0 match,
+1 divergence, 2 malformed log.
 
 ## Self-test
 
@@ -77,8 +79,7 @@ not compared. Exit status: 0 match, 1 divergence, 2 malformed log.
 Extra logs, such as random-program logs kept by `run_seeds.sh --keep`, can be
 added. `--end-store` cuts them after the `tohost` store (0x80010000 for
 `rvgen.py` programs), because the spin loop after it is a run of identical
-lines in which a dropped or duplicated line cannot be located. Mutations never
-touch CSRs that `compare.py` drops (`mvip`).
+lines in which a dropped or duplicated line cannot be located.
 
 The self-test checks that identical logs match, that reordered register
 entries and interleaved console text still match, and that each injected
