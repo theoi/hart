@@ -88,109 +88,110 @@ generated sets on every run.
 ## Configuration review map
 
 Upstream differences: `diff -ru $ACT4_HOME/riscv-arch-test/config/sail/sail-RVA20S64 tests/act4/config/hart-rv64gc`.
-"IC" is `docs/implementation-choices.md`; line numbers are at commit 2cfefda. Values not
+"IC" is `docs/implementation-choices.md`; line numbers are at commit 63cf8d5. Values not
 listed are unchanged from sail-RVA20S64 and either match hart (shown) or do not apply to an
-extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, Sdtrig, and so on, all disabled).
+extension hart lacks (V, H, Zicbo*, Sscofpmf, Smstateen, and so on, all disabled). Sdtrig is
+disabled too; hart's zero-trigger Sdtrig CSRs are covered under the limits below.
 
 ### Extensions (`hart-rv64gc.yaml` implemented_extensions, `sail.json` extensions)
 
 | Declared | hart source |
 | --- | --- |
-| I, M (and its subset Zmmul), A = Zaamo + Zalrsc, F, D, C = Zca + Zcd, Zicsr, Zifencei, Zicntr, Zihpm, Sm, S, U | Promise CPU ISA list; IC L13 `misa` = `RV64ACDFIMSU`; IC L43 (Zihpm counters hardwired to zero, allowed by the promise) |
-| Sv39 and Svbare; **Sv48 removed** (Sail `Sv48.supported` false) | IC L73: `satp.MODE` Bare and Sv39 only |
-| Svade | IC L75: A/D bits fault, hardware never writes PTEs |
-| Zicclsm | IC L62: misaligned loads and stores in hardware for RAM |
-| Ziccamoa, Ziccif, Ziccrse, Za128rs | RAM supports AMOs (A for RAM), coherent instruction fetch (IC L66), and LR/SC with a one-address reservation (IC L65) |
-| Ssccptr | IC L88: page-table walks read RAM (checked as S-mode loads) |
-| Sstvala | IC L52–55: `xtval` holds the instruction bits or the faulting address |
-| Sstvecd | IC L25: `stvec` Direct mode with any 4-byte-aligned base |
-| Ssu64xl | IC L21: `UXL` = 2 |
-| Sm and S version 1.13.0; Sail `privileged_isa_version` 1.13 | Needed for medeleg bit 19 (hardware error), which IC L28 makes writable; Sail allows bit 19 only from priv 1.13 |
+| I, M (and its subset Zmmul), A = Zaamo + Zalrsc, F, D, C = Zca + Zcd, Zicsr, Zifencei, Zicntr, Zihpm, Sm, S, U | Promise CPU ISA list; IC L25 `misa` = `RV64ACDFIMSU`; IC L55 (Zihpm counters hardwired to zero, allowed by the promise) |
+| Sv39 and Svbare; **Sv48 removed** (Sail `Sv48.supported` false) | IC L89: `satp.MODE` Bare and Sv39 only |
+| Svade | IC L91: A/D bits fault, hardware never writes PTEs |
+| Zicclsm | IC L77: misaligned loads and stores in hardware for RAM |
+| Ziccamoa, Ziccif, Ziccrse, Za128rs | RAM supports AMOs (A for RAM), coherent instruction fetch (IC L82), and LR/SC with a one-address reservation (IC L80) |
+| Ssccptr | IC L104, L75: page-table walks are checked as S-mode loads and read only RAM |
+| Sstvala | IC L65–68: `xtval` holds the instruction bits or the faulting address |
+| Sstvecd | IC L37: `stvec` Direct mode with any 4-byte-aligned base |
+| Ssu64xl | IC L33: `UXL` = 2 |
+| Sm and S version 1.13.0; Sail `privileged_isa_version` 1.13 | Needed for medeleg bit 19 (hardware error), which IC L40 makes writable; Sail allows bit 19 only from priv 1.13 |
 
 ### UDB parameters (`hart-rv64gc.yaml`)
 
 | Parameter | Value | hart source |
 | --- | --- | --- |
-| `MEDELEG_DELEGATABLE` | bits 1–9, 12, 13, 15, 19 (0x8b3fe); **changed**: bit 0 off, bit 19 on | IC L28 |
-| `MIDELEG_DELEGATABLE` | bits 1, 5, 9 | IC L29 |
-| `MISALIGNED_AMO` false; `LRSC_MISALIGNED_BEHAVIOR` "always raise access fault" | | IC L64 |
-| `LRSC_FAIL_ON_NON_EXACT_LRSC` | true (**changed**) | IC L65: SC succeeds only at the LR's physical address |
-| `LRSC_RESERVATION_STRATEGY` exact access; `LRSC_FAIL_ON_VA_SYNONYM` false | | IC L65: the reservation is a physical address |
-| `MUTABLE_MISA_*` | false | IC L13: `misa` read-only |
-| `HW_MSTATUS_FS_DIRTY_UPDATE` precise; `MSTATUS_FS_LEGAL_VALUES` [0,1,2,3]; `MSTATUS_VS_LEGAL_VALUES` [0] | | IC L23, L107 |
-| `UXLEN`, `SXLEN` | [64] | IC L21 |
-| `*_ENDIANNESS` | little | IC L24 |
-| `MEI/MSI/MTI/SEI/SSI/STI_INTR_IMPL` | true | IC L30 (all six `mie` bits writable), L31 |
-| `ASID_WIDTH` | 16 | IC L74 |
-| `SATP_MODE_BARE` | true | IC L73 |
-| `MTVEC_MODES`, `STVEC_MODES` [0,1]; base alignment 4 | | IC L25 |
-| `MTVEC_ILLEGAL_WRITE_BEHAVIOR` | custom (**changed** from retain) | IC L25: mode 2/3 become 0/1, which is not "retain" |
-| `REPORT_VA_IN_*TVAL_ON_*` true; `REPORT_ENCODING_IN_*TVAL_ON_ILLEGAL_INSTRUCTION` true; `*TVAL_WIDTH` 64 | | IC L52–55 (misaligned exceptions are never raised: IC L56, L62) |
-| `TIME_CSR_IMPLEMENTED` | true | IC L46 |
-| `MCOUNTENABLE_EN`, `SCOUNTENABLE_EN` | all 32 | IC L45 |
-| `HPM_COUNTER_EN` | all false (**changed**); `HPM_COUNTERn_WIDTH` and `HPM_EVENTS` removed because UDB defines them only for enabled counters | IC L43 |
-| `MCOUNTINHIBIT_IMPLEMENTED` true; `COUNTINHIBIT_EN` CY, IR, HPM3–31 (not TM) | | IC L42 |
-| `WFI_U_MODE` false; `WFI_FINITE` true | | IC L67; IC L136 (test profile: a WFI that nothing could wake completes) |
-| `TRAP_ON_ILLEGAL_WLRL` false | | IC L27 (`mcause` stores any value) |
-| `TRAP_ON_UNIMPLEMENTED_CSR`, `TRAP_ON_UNIMPLEMENTED_INSTRUCTION`, `TRAP_ON_RESERVED_INSTRUCTION` | true | IC L34; Sail `Ssstrict` |
-| `MARCHID_IMPLEMENTED`, `MIMPID_IMPLEMENTED` | false (**changed**; `ARCH_ID_VALUE`, `IMP_ID_VALUE` removed); `VENDOR_ID_BANK`/`OFFSET` 0 | IC L14: 0/0/0 by default; `hart --elf` uses the default `CpuConfig` (`Board::new_test`) |
-| `CONFIG_PTR_ADDRESS` | 0 | IC L15 |
-| `MISALIGNED_LDST` true; `MISALIGNED_LDST_EXCEPTION_PRIORITY` low | | IC L62: no misaligned exceptions |
-| `MISALIGNED_SPLIT_STRATEGY` | custom (**changed** from sequential_bytes) | IC L62, L55: a misaligned access within one page is performed whole (see `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE`); for one that crosses a page, both pages are translated and PMP-checked before any byte is accessed, and a fault reports the address of the part that faults. UDB's other option, sequential_bytes, processes the bytes one at a time from the lowest address. At the pin, no ACT4 generator reads this parameter (only the PMPSm testplan mentions it), so it does not change the generated tests |
-| `NUM_PMP_ENTRIES` 64 (**changed** from 16); `NUM_USABLE_PMP_ENTRIES` 16 | | IC L83: 16 usable entries; `pmpaddr16`–`63` and the upper `pmpcfg` registers exist and read 0. In UDB, `NUM_PMP_ENTRIES` 16 would make those CSRs nonexistent (illegal instruction) |
-| `PMP_GRANULARITY` 2 (4 bytes), `PMP_TOR/NA4/NAPOT_SUPPORTED` true | | IC L83, L85 |
-| `PHYS_ADDR_WIDTH` | 56 | Not stated in IC; `pmpaddr` holds PA bits 55:2 (`crates/hart-core/src/cpu/pmp.rs`) |
-| `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE` | 4096 | IC L62: a misaligned RAM access within one page is one access: one translation and one PMP check over the whole range (a partial overlap faults, IC L89), with `xtval` = the start address (`load_slow`/`store_slow` in `crates/hart-core/src/cpu/mod.rs`). Matches the RAM region's 4 KiB misaligned atomicity granule in `sail.json` |
+| `MEDELEG_DELEGATABLE` | bits 1–9, 12, 13, 15, 19 (0x8b3fe); **changed**: bit 0 off, bit 19 on | IC L40 |
+| `MIDELEG_DELEGATABLE` | bits 1, 5, 9 | IC L41 |
+| `MISALIGNED_AMO` false; `LRSC_MISALIGNED_BEHAVIOR` "always raise access fault" | | IC L79 |
+| `LRSC_FAIL_ON_NON_EXACT_LRSC` | true (**changed**) | IC L80: SC succeeds only at the LR's physical address |
+| `LRSC_RESERVATION_STRATEGY` exact access; `LRSC_FAIL_ON_VA_SYNONYM` false | | IC L80: the reservation is a physical address |
+| `MUTABLE_MISA_*` | false | IC L25: `misa` read-only |
+| `HW_MSTATUS_FS_DIRTY_UPDATE` precise; `MSTATUS_FS_LEGAL_VALUES` [0,1,2,3]; `MSTATUS_VS_LEGAL_VALUES` [0] | | IC L35, L123 |
+| `UXLEN`, `SXLEN` | [64] | IC L33 |
+| `*_ENDIANNESS` | little | IC L36 |
+| `MEI/MSI/MTI/SEI/SSI/STI_INTR_IMPL` | true | IC L42 (all six `mie` bits writable), L31 |
+| `ASID_WIDTH` | 16 | IC L90 |
+| `SATP_MODE_BARE` | true | IC L89 |
+| `MTVEC_MODES`, `STVEC_MODES` [0,1]; base alignment 4 | | IC L37 |
+| `MTVEC_ILLEGAL_WRITE_BEHAVIOR` | custom (**changed** from retain) | IC L37: mode 2/3 become 0/1, which is not "retain" |
+| `REPORT_VA_IN_*TVAL_ON_*` true; `REPORT_ENCODING_IN_*TVAL_ON_ILLEGAL_INSTRUCTION` true; `*TVAL_WIDTH` 64 | | IC L65–68 (misaligned exceptions are never raised: IC L69, L77) |
+| `TIME_CSR_IMPLEMENTED` | true | IC L59 |
+| `MCOUNTENABLE_EN`, `SCOUNTENABLE_EN` | all 32 | IC L58 |
+| `HPM_COUNTER_EN` | all false (**changed**); `HPM_COUNTERn_WIDTH` and `HPM_EVENTS` removed because UDB defines them only for enabled counters | IC L55 |
+| `MCOUNTINHIBIT_IMPLEMENTED` true; `COUNTINHIBIT_EN` CY, IR, HPM3–31 (not TM) | | IC L54 |
+| `WFI_U_MODE` false; `WFI_FINITE` true | | IC L83; IC L152 (test profile: a WFI that nothing could wake completes) |
+| `TRAP_ON_ILLEGAL_WLRL` false | | IC L39 (`mcause` stores any value) |
+| `TRAP_ON_UNIMPLEMENTED_CSR`, `TRAP_ON_UNIMPLEMENTED_INSTRUCTION`, `TRAP_ON_RESERVED_INSTRUCTION` | true | IC L46; Sail `Ssstrict` |
+| `MARCHID_IMPLEMENTED`, `MIMPID_IMPLEMENTED` | false (**changed**; `ARCH_ID_VALUE`, `IMP_ID_VALUE` removed); `VENDOR_ID_BANK`/`OFFSET` 0 | IC L26: 0/0/0 by default; `hart --elf` uses the default `CpuConfig` (`Board::new_test`) |
+| `CONFIG_PTR_ADDRESS` | 0 | IC L27 |
+| `MISALIGNED_LDST` true; `MISALIGNED_LDST_EXCEPTION_PRIORITY` low | | IC L77: no misaligned exceptions |
+| `MISALIGNED_SPLIT_STRATEGY` | custom (**changed** from sequential_bytes) | IC L77, L68: a misaligned access within one page is performed whole (see `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE`); for one that crosses a page, both pages are translated and PMP-checked before any byte is accessed, and a fault reports the address of the part that faults. UDB's other option, sequential_bytes, processes the bytes one at a time from the lowest address. At the pin, no ACT4 generator reads this parameter (only the PMPSm testplan mentions it), so it does not change the generated tests |
+| `NUM_PMP_ENTRIES` 64 (**changed** from 16); `NUM_USABLE_PMP_ENTRIES` 16 | | IC L99: 16 usable entries; `pmpaddr16`–`63` and the upper `pmpcfg` registers exist and read 0. In UDB, `NUM_PMP_ENTRIES` 16 would make those CSRs nonexistent (illegal instruction) |
+| `PMP_GRANULARITY` 2 (4 bytes), `PMP_TOR/NA4/NAPOT_SUPPORTED` true | | IC L99, L101 |
+| `PHYS_ADDR_WIDTH` | 56 | IC L76: 56-bit physical addresses; `pmpaddr` holds address bits 55:2 |
+| `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE` | 4096 | IC L77: a misaligned RAM access within one page is one access: one translation and one PMP check over the whole range (a partial overlap faults, IC L105), with `xtval` = the start address (`load_slow`/`store_slow` in `crates/hart-core/src/cpu/mod.rs`). Matches the RAM region's 4 KiB misaligned atomicity granule in `sail.json` |
 | `PMA_GRANULARITY` | 3 (unchanged) | Not used for test selection or generation |
 
 ### Sail configuration (`sail.json`)
 
 | Field | Value | hart source |
 | --- | --- | --- |
-| `base.medeleg.delegatable_bits` | 0x8B3FE (**changed**) | IC L28 |
-| `base.mideleg.delegatable_bits` | 0x222 (**changed**; was 0x2222, LCOFI without Sscofpmf) | IC L29 |
-| `base.writable_hpm_counters` | 0 (**changed**) | IC L43 |
-| `base.mcountinhibit.writable_bits` | 0xFFFF_FFFD | IC L42 |
-| `base.mcounteren/scounteren_writable_bits` | all ones | IC L45 |
-| `base.writable_fiom` | true | IC L32 |
-| `base.mtvec`, `base.stvec` | direct and vectored, 4-byte alignment | IC L25 |
-| `base.xtval_nonzero` | all true except reserved | IC L52–55 |
-| `base.mstatus` | FS four-state, VS off | IC L23 |
-| `base.privileged_isa_version` | 1.13 (**changed**) | IC L28 (bit 19) |
-| `base.reserved_behavior.fcsr_rm` | Fcsr_RM_Illegal (**changed** from Fatal) | IC L109: DYN with `frm` 5–7 raises illegal instruction |
-| `memory.physaddr_bits` | 56 | `pmp.rs` (see above) |
-| `memory.asidlen` | 16 | IC L74 |
-| `memory.pmp` | `count` 64 (**changed** from 16), `usable_count` 16, grain 0, TOR/NA4/NAPOT | IC L83, L85: entries 16–63 exist and read 0 |
-| `memory.misaligned.exceptions` | scalar loads/stores none; AMO and LR/SC AccessFault | IC L62, L64 |
-| `memory.regions` RAM | 0x8000_0000, 2 GiB, main memory | IC L136 (test profile RAM, 2 GiB default) and `link.ld` |
-| `memory.regions` RAM `misaligned_atomicity_granule_size_exp` | 12 (**changed** from 0) | IC L62, L89: a misaligned access that stays within a 4 KiB page is performed as one access with one PMP check, as in hart. With 0, Sail split it into aligned chunks and PMP-checked each, which differs for an access that straddles a PMP boundary inside a page |
-| `memory.misaligned.default_allowed_within_exp` | 0 (unchanged) | Applies only where the MAG does not: page-crossing RAM accesses (see limits below); misaligned device accesses fault first (IC L63) |
-| `memory.regions` devices | One region per test-profile device (**changed** from one region over 0x0200_0000–0x1200_0000): syscon 0x0010_0000 (4 KiB), CLINT 0x0200_0000 (64 KiB), SIG 0x0C00_0000 (4 KiB), UART 0x1000_0000 (4 KiB). Addresses between them are unmapped, as in hart | IC L136, L119; base and size of each device in `Board::new_test` (`crates/hart-core/src/board.rs`). Sail regions are whole pages, so the SIG and UART regions are larger than the devices (see limits below) |
-| `memory.regions` device attributes | IO memory, not executable, no AMOs (`AMONone`) or LR/SC (`RsrvNone`), no page-table reads or writes; misaligned scalar access AccessFault (**changed**) | IC L120, L63 (within a page; see limits below for page-crossing accesses) |
-| `memory.regions` ROM | **removed** | `hart --elf` has nothing at 0x1000 (IC L136) |
-| `platform.vendorid/archid/impid/hartid` | 0 | IC L14, L15 |
-| `platform.reservation` | 8-byte set, `require_exact_reservation_addr` true (**changed**), `invalidate_on_same_hart_store` false | IC L65 |
-| `platform.clint` | base 0x0200_0000, size 0x1_0000 (**changed** from 0xC_0000) | IC L125; `CLINT_SIZE` in `crates/hart-core/src/devices/clint.rs` |
-| `platform.simple_interrupt_generator` | base 0x0C00_0000 | IC L137 |
-| `platform.interrupts`, `extensions.S.interrupts` | all supported | IC L30–31 |
-| `platform.clock_frequency` | 10 MHz (**changed**) | IC L123 |
-| `platform.instructions_per_tick` | 1 (**changed**) | Sail increments `mcycle` once per tick, so 1 models IC L40 (CPI 1); hart runs with `--timebase insns:1` (IC L123) so `mtime` matches too |
-| `platform.wfi_is_nop` false; `wfi_available_to_user_mode` false; `max_time_to_wait` 200 | | IC L67, L135 (see limits below) |
-| `extensions.F.fflags_dirty_policy` | Fflags_Dirty_Flag (**changed**) | IC L107: FS becomes Dirty when an instruction raises any flag, even an already-set one |
-| `extensions.Sv48.supported` | false (**changed**) | IC L73 |
-| `Zicbo*`, `Svpbmt`, `Sstc`, `Svadu`, `Svnapot`, `Sdtrig` (0 triggers) | disabled | IC L32, L33, L76; for the trigger CSRs see limits below |
+| `base.medeleg.delegatable_bits` | 0x8B3FE (**changed**) | IC L40 |
+| `base.mideleg.delegatable_bits` | 0x222 (**changed**; was 0x2222, LCOFI without Sscofpmf) | IC L41 |
+| `base.writable_hpm_counters` | 0 (**changed**) | IC L55 |
+| `base.mcountinhibit.writable_bits` | 0xFFFF_FFFD | IC L54 |
+| `base.mcounteren/scounteren_writable_bits` | all ones | IC L58 |
+| `base.writable_fiom` | true | IC L44 |
+| `base.mtvec`, `base.stvec` | direct and vectored, 4-byte alignment | IC L37 |
+| `base.xtval_nonzero` | all true except reserved | IC L65–68 |
+| `base.mstatus` | FS four-state, VS off | IC L35 |
+| `base.privileged_isa_version` | 1.13 (**changed**) | IC L40 (bit 19) |
+| `base.reserved_behavior.fcsr_rm` | Fcsr_RM_Illegal (**changed** from Fatal) | IC L125: DYN with `frm` 5–7 raises illegal instruction |
+| `memory.physaddr_bits` | 56 | IC L76 |
+| `memory.asidlen` | 16 | IC L90 |
+| `memory.pmp` | `count` 64 (**changed** from 16), `usable_count` 16, grain 0, TOR/NA4/NAPOT | IC L99, L101: entries 16–63 exist and read 0 |
+| `memory.misaligned.exceptions` | scalar loads/stores none; AMO and LR/SC AccessFault | IC L77, L79 |
+| `memory.regions` RAM | 0x8000_0000, 2 GiB, main memory | IC L152 (test profile RAM, 2 GiB default), L75 (RAM is the only main memory), and `link.ld` |
+| `memory.regions` RAM `misaligned_atomicity_granule_size_exp` | 12 (**changed** from 0) | IC L77, L105: a misaligned access that stays within a 4 KiB page is performed as one access with one PMP check, as in hart. With 0, Sail split it into aligned chunks and PMP-checked each, which differs for an access that straddles a PMP boundary inside a page |
+| `memory.misaligned.default_allowed_within_exp` | 0 (unchanged) | Applies only where the MAG does not: page-crossing RAM accesses (see limits below); misaligned device accesses fault first (IC L78) |
+| `memory.regions` devices | One region per test-profile device (**changed** from one region over 0x0200_0000–0x1200_0000): syscon 0x0010_0000 (4 KiB), CLINT 0x0200_0000 (64 KiB), SIG 0x0C00_0000 (4 KiB), UART 0x1000_0000 (4 KiB). Addresses between them are unmapped, as in hart | IC L152, L135; base and size of each device in `Board::new_test` (`crates/hart-core/src/board.rs`). Sail regions are whole pages, so the SIG and UART regions are larger than the devices (see limits below) |
+| `memory.regions` device attributes | IO memory, not executable, no AMOs (`AMONone`) or LR/SC (`RsrvNone`), no page-table reads or writes; misaligned scalar access AccessFault (**changed**) | IC L75: a fetch from a device raises an instruction access fault (1), an AMO a store/AMO access fault (7), and a page-table walk whose PTE is not in RAM an access fault of the original access type; LR and SC outside RAM fault (IC L81). IC L136, L78: misaligned device accesses fault (within a page; see limits below for page-crossing accesses) |
+| `memory.regions` ROM | **removed** | `hart --elf` has nothing at 0x1000 (IC L152) |
+| `platform.vendorid/archid/impid/hartid` | 0 | IC L26, L27 |
+| `platform.reservation` | 8-byte set, `require_exact_reservation_addr` true (**changed**), `invalidate_on_same_hart_store` false | IC L80 |
+| `platform.clint` | base 0x0200_0000, size 0x1_0000 (**changed** from 0xC_0000) | IC L141; `CLINT_SIZE` in `crates/hart-core/src/devices/clint.rs` |
+| `platform.simple_interrupt_generator` | base 0x0C00_0000 | IC L153 |
+| `platform.interrupts`, `extensions.S.interrupts` | all supported | IC L42–43 |
+| `platform.clock_frequency` | 10 MHz (**changed**) | IC L139 |
+| `platform.instructions_per_tick` | 1 (**changed**) | Sail increments `mcycle` once per tick, so 1 models IC L52 (CPI 1); hart runs with `--timebase insns:1` (IC L139) so `mtime` matches too |
+| `platform.wfi_is_nop` false; `wfi_available_to_user_mode` false; `max_time_to_wait` 200 | | IC L83, L151 (see limits below) |
+| `extensions.F.fflags_dirty_policy` | Fflags_Dirty_Flag (**changed**) | IC L123: FS becomes Dirty when an instruction raises any flag, even an already-set one |
+| `extensions.Sv48.supported` | false (**changed**) | IC L89 |
+| `Zicbo*`, `Svpbmt`, `Sstc`, `Svadu`, `Svnapot`, `Sdtrig` (0 triggers) | disabled | IC L44, L45, L92; for the trigger CSRs see limits below |
 
 ### Macros and linker script
 
 | Item | Choice | hart source |
 | --- | --- | --- |
-| `RVMODEL_HALT_PASS/FAIL` | One 64-bit `sd` of 1 (pass) or 3 (fail) to `tohost`, after `tohost` reads 0 | IC L135: HTIF polled between batches; device 0 exit code `payload >> 1` |
-| `RVMODEL_IO_WRITE_STR` | Per byte: wait until `tohost` reads 0, then one `sd` of `(0x0101 << 48) \| byte` | IC L135: device 1 command 1. hart clears `tohost` only when it polls, so without the wait, back-to-back bytes would overwrite each other |
-| `RVMODEL_ACCESS_FAULT_ADDRESS` | 0 | IC L119: address 0 unmapped |
-| `RVMODEL_MTIME_ADDRESS`, `RVMODEL_MTIMECMP_ADDRESS`, `RVMODEL_MSIP_ADDRESS` | 0x0200_BFF8, 0x0200_4000, 0x0200_0000 | IC L125 |
-| `RVMODEL_SET/CLR_MEXT/SEXT/SSW_INT` | SIG PLATFORM register (+4): bit 31 = level, bits 11/9/1 | IC L137 |
-| `RVMODEL_MAX_CYCLES_PER_TIMER_TICK` 1, `RVMODEL_TIMER_INT_SOON_DELAY` 20000, `RVMODEL_INTERRUPT_LATENCY` 10 | | One tick per instruction (above). IC L97: `mtime` and device lines change only during device accesses or between run batches, which are at most 10,000 instructions (`BATCH` in `crates/hart-core/src/board.rs`), so the timer idle loop (about 40,000 instructions) covers the delay plus one batch. SIG and CLINT writes take effect at the access, and the CPU polls after every device access (IC L97) |
-| `link.ld` | unchanged: RAM 0x8000_0000, 2 GiB | IC L136 |
+| `RVMODEL_HALT_PASS/FAIL` | One 64-bit `sd` of 1 (pass) or 3 (fail) to `tohost`, after `tohost` reads 0 | IC L151: HTIF polled between batches; device 0 exit code `payload >> 1` |
+| `RVMODEL_IO_WRITE_STR` | Per byte: wait until `tohost` reads 0, then one `sd` of `(0x0101 << 48) \| byte` | IC L151: device 1 command 1. hart clears `tohost` only when it polls, so without the wait, back-to-back bytes would overwrite each other |
+| `RVMODEL_ACCESS_FAULT_ADDRESS` | 0 | IC L135: address 0 unmapped |
+| `RVMODEL_MTIME_ADDRESS`, `RVMODEL_MTIMECMP_ADDRESS`, `RVMODEL_MSIP_ADDRESS` | 0x0200_BFF8, 0x0200_4000, 0x0200_0000 | IC L141 |
+| `RVMODEL_SET/CLR_MEXT/SEXT/SSW_INT` | SIG PLATFORM register (+4): bit 31 = level, bits 11/9/1 | IC L153 |
+| `RVMODEL_MAX_CYCLES_PER_TIMER_TICK` 1, `RVMODEL_TIMER_INT_SOON_DELAY` 20000, `RVMODEL_INTERRUPT_LATENCY` 10 | | One tick per instruction (above). IC L113: `mtime` and device lines change only during device accesses or between run batches, which are at most 10,000 instructions (`BATCH` in `crates/hart-core/src/board.rs`), so the timer idle loop (about 40,000 instructions) covers the delay plus one batch. SIG and CLINT writes take effect at the access, and the CPU polls after every device access (IC L113) |
+| `link.ld` | unchanged: RAM 0x8000_0000, 2 GiB | IC L152 |
 
 The same macros, linker script, and `sail.json` are used for the Sail run that computes the
 expected results and for the ELFs that run on hart.
@@ -199,33 +200,33 @@ expected results and for the ELFs that run on hart.
 
 Sail has no option for a few hart choices. Each is listed with how it is handled:
 
-- **PMP R=0, W=1** (IC L86): hart clears W and keeps X; Sail's closest option
+- **PMP R=0, W=1** (IC L102): hart clears W and keeps X; Sail's closest option
   (`PMP_ClearPermissions`) clears X as well. The two differ only when X = 1.
-- **`mtvec`/`stvec` mode 2 or 3** (IC L25): hart clears bit 1; Sail can keep the old mode
+- **`mtvec`/`stvec` mode 2 or 3** (IC L37): hart clears bit 1; Sail can keep the old mode
   (`Xtvec_Ignore`) or stop. The two differ on such writes.
 - **WFI**: hart stalls until `mip & mie` is nonzero, completes when nothing could wake it,
-  and skips `mtime` ahead to the timer otherwise (IC L67, L123, L135). Sail waits at most
+  and skips `mtime` ahead to the timer otherwise (IC L83, L139, L151). Sail waits at most
   `max_time_to_wait` ticks. Both are allowed by the specification.
-- **Misaligned RAM access that crosses a page** (IC L62): hart translates and PMP-checks the
+- **Misaligned RAM access that crosses a page** (IC L77): hart translates and PMP-checks the
   part on each page as one access each, before accessing any byte. Sail splits the access into
   naturally aligned chunks and checks and performs them in increasing address order. The two
   can differ when a PMP boundary lies inside one page's part, and in which bytes a store that
   faults on its second page has already written.
-- **Misaligned device access that crosses a page** (IC L63): hart splits it into byte
+- **Misaligned device access that crosses a page** (IC L78): hart splits it into byte
   accesses; Sail's device regions raise an access fault for every misaligned access.
-- **Debug-trigger CSRs** (IC L33): hart implements the Sdtrig CSRs with zero triggers, as
+- **Debug-trigger CSRs** (IC L45): hart implements the Sdtrig CSRs with zero triggers, as
   Spike does with `--triggers=0`: `tselect`, `tdata1`–`tdata3`, and `tinfo` read 0 and ignore
   writes, and `scontext` (32 bits) and `mcontext` (13 bits) are read/write registers. No Sail
   setting matches: with `Sdtrig.supported` false these CSRs raise illegal instruction, and
   with it true Sail requires `num_triggers` of at least 1. The configuration declares no
   Sdtrig (absent from `hart-rv64gc.yaml`, disabled in `sail.json`), so ACT4 generates no Sdtrig
   tests.
-- **CLINT register accesses** (IC L125): hart's CLINT accepts naturally aligned 1-, 2-, 4-,
+- **CLINT register accesses** (IC L141): hart's CLINT accepts naturally aligned 1-, 2-, 4-,
   and 8-byte accesses to any part of `msip`, `mtimecmp`, and `mtime`, and reads 0 and ignores
   writes at other offsets (`crates/hart-core/src/devices/clint.rs`). Sail's CLINT accepts only
   4- or 8-byte accesses at the start of a register and 4-byte accesses at the upper half of
   `mtimecmp` and `mtime`; any other access is an access fault.
-- **UART, syscon, and the rest of the SIG and UART pages** (IC L127, L128, L136, L137): Sail
+- **UART, syscon, and the rest of the SIG and UART pages** (IC L143, L144, L152, L153): Sail
   has no model of the test profile's UART (0x1000_0000) or syscon (0x0010_0000), so their
   regions behave as plain memory in Sail. The SIG uses 0x20 bytes and the UART 0x100 bytes of
   their 4 KiB pages; in hart the rest of each page is unmapped (access fault), while in Sail it
