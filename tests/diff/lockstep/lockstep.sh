@@ -4,7 +4,7 @@
 # compare their commit logs as they stream (nothing large is written to disk).
 #   lockstep.sh FW_JUMP_ELF IMAGE LIMIT [OUTDIR]
 # LIMIT is the number of commit lines to compare. OUTDIR (default
-# target/lockstep) receives compare.txt and both consoles. Environment: SPIKE
+# target/lockstep) receives compare.txt, both consoles, and both stderr logs. Environment: SPIKE
 # (default: spike on PATH), HART (a prebuilt hart binary; by default the script
 # runs cargo build --release and uses target/release/hart), COMPARE_ARGS (extra
 # compare.py flags, e.g. "--keep-going 1000").
@@ -35,12 +35,12 @@ rm -f "$out/spike.pipe" "$out/hart.pipe"
 mkfifo "$out/spike.pipe" "$out/hart.pipe"
 
 "$here/run_spike.sh" "$fw" "$kernel" --log-commits --log="$out/spike.pipe" \
-    < /dev/null > "$out/spike-console.log" 2>&1 &
+    < /dev/null > "$out/spike-console.log" 2> "$out/spike-stderr.log" &
 spike_pid=$!
 # hart retires a few more instructions than compared so its log never ends first.
 "$HART" --profile spike --bios "$fw" --kernel "$kernel" \
     --dtb "$here/spike-sv39.dtb" --trace "$out/hart.pipe" --max-insns $((limit + 1000)) \
-    < /dev/null > "$out/hart-console.log" 2>&1 &
+    < /dev/null > "$out/hart-console.log" 2> "$out/hart-stderr.log" &
 hart_pid=$!
 trap 'kill $spike_pid $hart_pid 2>/dev/null; rm -f "$out/spike.pipe" "$out/hart.pipe"; exit 130' INT TERM
 

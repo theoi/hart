@@ -91,14 +91,16 @@ binary instead) and boots the guest on
 Spike (`run_spike.sh`: the reference flags above, 256 MiB, the device tree in
 `spike-sv39.dtb`) and on `hart --profile spike` with the same device tree. Both
 write their commit logs into named pipes that `compare.py --limit LIMIT` reads,
-so a full boot (about 350 million lines, hundreds of gigabytes as text) is
-compared without being stored; expect roughly 1 million lines per second.
+so a full boot (tens of millions of lines, gigabytes as text) is compared
+without being stored; expect roughly 0.7 million lines per second.
 
-`OUTDIR` (default `target/lockstep`) receives `compare.txt` and both consoles.
+`OUTDIR` (default `target/lockstep`) receives `compare.txt`, both consoles
+(`spike-console.log`, `hart-console.log`), and each simulator's stderr.
 The driver prints the comparator's report and whether the consoles agree, and
 exits with the comparator's status. Set `COMPARE_ARGS="--keep-going N"` to list
 value-only mismatches and keep going until the first change of control flow.
 
-The dev guest prints its shell prompt about 350 million instructions after
-reset, so a `LIMIT` of 380000000 covers reset to the prompt. Neither side gets
-console input, so the guest then idles in its timer loop.
+The guest-v1 images print the shell prompt about 61 million instructions after
+reset in this configuration, so a `LIMIT` of 100000000 covers reset to the
+prompt with a margin. Neither side gets console input, so after the prompt the
+guest idles in its timer loop.
