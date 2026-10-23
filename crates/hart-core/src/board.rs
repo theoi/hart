@@ -28,6 +28,7 @@ use crate::cpu::Cpu;
 use crate::devices::clint::{Clint, CLINT_BASE, CLINT_SIZE};
 use crate::devices::htif::Htif;
 use crate::devices::plic::{Plic, PLIC_BASE, PLIC_SIZE};
+use crate::devices::sig::{InterruptTrigger, SIG_BASE, SIG_SIZE};
 use crate::devices::syscon::{Syscon, SYSCON_BASE, SYSCON_SIZE};
 use crate::devices::uart::{Uart, UART_BASE, UART_IRQ, UART_SIZE};
 use crate::fdt::{Fdt, FdtError};
@@ -154,6 +155,10 @@ pub struct Board {
     instret: u64,
     dtb: Vec<u8>,
     layout: BootLayout,
+    /// Test profile: a WFI that nothing could ever wake (no enabled
+    /// interrupt, no timer ahead) completes instead of stalling, as the spec
+    /// allows.
+    resume_stuck_wfi: bool,
 }
 
 fn align_down(v: u64, a: u64) -> u64 {
@@ -264,18 +269,21 @@ impl Board {
             instret: 0,
             dtb,
             layout,
+            resume_stuck_wfi: false,
         })
     }
 
     /// Builds the bare-metal test profile and loads a test ELF: RAM at
-    /// 0x8000_0000, CLINT, UART, syscon, and HTIF at the ELF's
-    /// `tohost`/`fromhost` symbols. No PLIC and no device tree. The hart
-    /// starts at the ELF entry in M-mode with all registers zero.
+    /// 0x8000_0000, CLINT, UART, syscon, the test interrupt trigger (SIG) at
+    /// the PLIC's address, and HTIF at the ELF's `tohost`/`fromhost`
+    /// symbols. No PLIC and no device tree. The hart starts at the ELF entry
+    /// in M-mode with all registers zero.
     pub fn new_test(config: BoardConfig, elf: &[u8]) -> Result<Self, BoardError> {
         let mut bus = Bus::new(RAM_BASE, config.ram_size as usize);
         let clint = bus.add_device(CLINT_BASE, CLINT_SIZE, Box::new(Clint::new()));
         bus.add_device(SYSCON_BASE, SYSCON_SIZE, Box::new(Syscon::new()));
         let uart = bus.add_device(UART_BASE, UART_SIZE, Box::new(Uart::new(UART_IRQ)));
+        bus.add_device(SIG_BASE, SIG_SIZE, Box::new(InterruptTrigger::new()));
         let loaded = loader::load_elf(&mut bus, elf)?;
         let htif = Htif::from_elf(&loaded).unwrap_or_else(Htif::disabled);
         let layout = BootLayout { entry: loaded.entry, kernel: None, dtb: (0, 0), fw_dynamic_info: 0 };
@@ -292,6 +300,7 @@ impl Board {
             instret: 0,
             dtb: Vec::new(),
             layout,
+            resume_stuck_wfi: true,
         })
     }
 
@@ -398,7 +407,10 @@ impl Board {
             self.bus.tick();
             self.htif.poll_bus(&mut self.bus);
             if waiting && !self.skip_idle_time() {
-                break;
+                if !self.resume_stuck_wfi {
+                    break;
+                }
+                self.cpu.waiting = false;
             }
         }
         self.instret - start
@@ -544,6 +556,96 @@ mod tests {
         now.set(1_000 + 1_000_100);
         board.run(10);
         assert_eq!(board.mtime(), 10_001, "sub-tick remainders carry over");
+    }
+
+    /// A minimal ELF with one segment holding `code` at 0x8000_0000 and a
+    /// `tohost` symbol at 0x8000_1000.
+    fn test_elf(code: &[u32]) -> Vec<u8> {
+        let code: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let strtab = b"\0tohost\0";
+        let mut symtab = vec![0u8; 48];
+        symtab[24..28].copy_from_slice(&1u32.to_le_bytes());
+        symtab[32..40].copy_from_slice(&0x8000_1000u64.to_le_bytes());
+        let code_off = 64 + 56;
+        let sym_off = code_off + code.len();
+        let str_off = sym_off + symtab.len();
+        let sh_off = (str_off + strtab.len() + 7) & !7;
+        let mut b = vec![0u8; sh_off + 3 * 64];
+        b[0..4].copy_from_slice(b"\x7fELF");
+        (b[4], b[5], b[6]) = (2, 1, 1);
+        b[16..18].copy_from_slice(&2u16.to_le_bytes());
+        b[18..20].copy_from_slice(&243u16.to_le_bytes());
+        b[24..32].copy_from_slice(&RAM_BASE.to_le_bytes());
+        b[32..40].copy_from_slice(&64u64.to_le_bytes());
+        b[40..48].copy_from_slice(&(sh_off as u64).to_le_bytes());
+        b[54..56].copy_from_slice(&56u16.to_le_bytes());
+        b[56..58].copy_from_slice(&1u16.to_le_bytes());
+        b[58..60].copy_from_slice(&64u16.to_le_bytes());
+        b[60..62].copy_from_slice(&3u16.to_le_bytes());
+        b[64..68].copy_from_slice(&1u32.to_le_bytes());
+        b[72..80].copy_from_slice(&(code_off as u64).to_le_bytes());
+        b[80..88].copy_from_slice(&RAM_BASE.to_le_bytes());
+        b[88..96].copy_from_slice(&RAM_BASE.to_le_bytes());
+        b[96..104].copy_from_slice(&(code.len() as u64).to_le_bytes());
+        b[104..112].copy_from_slice(&0x2000u64.to_le_bytes());
+        b[code_off..sym_off].copy_from_slice(&code);
+        b[sym_off..str_off].copy_from_slice(&symtab);
+        b[str_off..str_off + strtab.len()].copy_from_slice(strtab);
+        let sh1 = sh_off + 64;
+        b[sh1 + 4..sh1 + 8].copy_from_slice(&2u32.to_le_bytes());
+        b[sh1 + 24..sh1 + 32].copy_from_slice(&(sym_off as u64).to_le_bytes());
+        b[sh1 + 32..sh1 + 40].copy_from_slice(&(symtab.len() as u64).to_le_bytes());
+        b[sh1 + 40..sh1 + 44].copy_from_slice(&2u32.to_le_bytes());
+        let sh2 = sh_off + 128;
+        b[sh2 + 4..sh2 + 8].copy_from_slice(&3u32.to_le_bytes());
+        b[sh2 + 24..sh2 + 32].copy_from_slice(&(str_off as u64).to_le_bytes());
+        b[sh2 + 32..sh2 + 40].copy_from_slice(&(strtab.len() as u64).to_le_bytes());
+        b
+    }
+
+    /// Writes `value` to tohost (0x8000_1000) from code placed `offset`
+    /// bytes into RAM: auipc t0, 1; addi t0, t0, -offset; li t1, value;
+    /// sd t1, 0(t0); j .
+    fn exit_program(value: u32, offset: u32) -> Vec<u32> {
+        let neg = offset.wrapping_neg() & 0xfff;
+        vec![0x0000_1297, (neg << 20) | 0x0002_8293, (value << 20) | 0x0000_0313, 0x0062_b023, 0x0000_006f]
+    }
+
+    #[test]
+    fn test_profile_reports_htif_exit() {
+        let config = BoardConfig { ram_size: MIB, ..BoardConfig::default() };
+        let mut board = Board::new_test(config, &test_elf(&exit_program(1, 0))).unwrap();
+        assert!(board.has_htif());
+        board.run(100_000);
+        assert_eq!(board.power_state(), PowerState::Exit(0));
+
+        let config = BoardConfig { ram_size: MIB, ..BoardConfig::default() };
+        let mut board = Board::new_test(config, &test_elf(&exit_program(7, 0))).unwrap();
+        board.run(100_000);
+        assert_eq!(board.power_state(), PowerState::Exit(3));
+    }
+
+    #[test]
+    fn test_profile_maps_sig_and_no_plic() {
+        let config = BoardConfig { ram_size: MIB, ..BoardConfig::default() };
+        let mut board = Board::new_test(config, &test_elf(&exit_program(1, 0))).unwrap();
+        assert_eq!(board.bus.read(SIG_BASE, 4), Ok(0x0001_0001));
+        board.bus.write(SIG_BASE + 4, 4, (1 << 31) | (1 << 1)).unwrap();
+        assert_eq!(board.bus.wires.test_irq, crate::irq::bits::SSIP);
+        assert!(board.bus.read(SIG_BASE + 0x20_0004, 4).is_err(), "no PLIC context registers");
+        assert!(board.bus.read(0, 4).is_err(), "address 0 is unmapped");
+    }
+
+    #[test]
+    fn test_profile_wfi_that_cannot_wake_completes() {
+        // wfi; then exit with value 1.
+        let mut code = vec![0x1050_0073];
+        code.extend(exit_program(1, 4));
+        let config = BoardConfig { ram_size: MIB, ..BoardConfig::default() };
+        let mut board = Board::new_test(config, &test_elf(&code)).unwrap();
+        board.bus.write(CLINT_BASE + 0x4000, 8, u64::MAX).unwrap();
+        board.run(100_000);
+        assert_eq!(board.power_state(), PowerState::Exit(0));
     }
 
     #[test]

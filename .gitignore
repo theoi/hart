@@ -4,3 +4,4 @@
 /tests/riscv-tests/src/
 /tests/testfloat/build/
 __pycache__/
+/tests/boot/images/

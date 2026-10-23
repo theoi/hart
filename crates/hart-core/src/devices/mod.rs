@@ -1,11 +1,13 @@
-//! Platform devices: CLINT, PLIC, NS16550A UART, syscon power control, and
-//! the HTIF host interface used by bare-metal tests and the Spike profile.
+//! Platform devices: CLINT, PLIC, NS16550A UART, syscon power control, the
+//! HTIF host interface used by bare-metal tests and the Spike profile, and
+//! the test-only interrupt trigger (SIG) used by ACT4.
 //! The MMIO devices implement [`crate::bus::Device`]; HTIF is polled (see
 //! [`htif`]).
 
 pub mod clint;
 pub mod htif;
 pub mod plic;
+pub mod sig;
 pub mod syscon;
 pub mod uart;
 
