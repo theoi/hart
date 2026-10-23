@@ -52,7 +52,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Illegal instruction | The instruction bits (16 bits for compressed encodings). |
 | Breakpoint (EBREAK, C.EBREAK) | The pc of the instruction. |
 | Ecall | 0. |
-| Access and page faults | The faulting virtual address. For a fetch that crosses a page, the address of the part that faults. |
+| Access and page faults | The faulting virtual address. For an access that crosses a page boundary (a 32-bit instruction fetch, or a misaligned load or store), the address of the part that faults, so a fault on the second page reports the start of that page. |
 | Instruction address misaligned | Never raised (C is always enabled). |
 
 ## Memory access
@@ -60,7 +60,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Item | Choice |
 | --- | --- |
 | Misaligned loads and stores | Supported in hardware for RAM (Zicclsm), including accesses that cross a page. Both pages are translated and PMP-checked before any byte is accessed. |
-| Misaligned access to a device region | Access fault. |
+| Misaligned access to a device region | Access fault when the access stays within one page. An access that crosses a page boundary is split into single-byte accesses after both pages are translated and checked. |
 | Misaligned AMO, LR, SC | Access fault: load access fault (5) for LR, store/AMO access fault (7) for SC and AMOs. Matches Spike and Sail's RVA20S64 configuration. |
 | LR/SC reservation | The physical address of the LR. SC succeeds only at that address, and any SC clears the reservation. SC is translated as a store first, so it can page-fault even when it would fail. Traps and xRET do not clear the reservation. |
 | FENCE, FENCE.I | Both are no-ops. Decoded instructions are cached per physical page and dropped on any write to that page, so instruction fetch always sees earlier stores. |
@@ -71,7 +71,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Item | Choice |
 | --- | --- |
 | `satp.MODE` | Bare and Sv39. A write with any other mode leaves `satp` unchanged. |
-| `satp.ASID` | 16 bits, writable. The TLB is flushed on every `satp` write, so ASIDs are not used for tagging. |
+| `satp.ASID` | 16 bits, writable. ASIDs are not used to tag TLB entries: every accepted `satp` write flushes the TLB. |
 | A and D bits | Svade: a leaf PTE with A = 0, or D = 0 on a store or AMO, raises a page fault. Hardware never writes PTEs. |
 | Reserved PTE bits | Bits 63:54 must be zero (no Svnapot or Svpbmt), otherwise page fault. A non-leaf PTE with A, D, or U set raises a page fault. |
 | TLB | 1024 entries per access type (fetch, load, store), direct-mapped by virtual page number and tagged with the translation context (privilege mode, MPRV/MPP, SUM, MXR), so mode and `mstatus` changes need no flush. Flushed by SFENCE.VMA (any operands), `satp` writes, and PMP writes. |
@@ -94,7 +94,7 @@ against Spike needs no special cases. The reference Spike configuration is
 | Item | Choice |
 | --- | --- |
 | Priority | Interrupts to M-mode (not delegated) before interrupts to S-mode. Within each: MEI, MSI, MTI, SEI, SSI, STI. |
-| Polling, normal profile | Before every instruction. |
+| Polling, normal profile | Equivalent to polling before every instruction. hart polls at the start of each run batch and after every Zicsr instruction, MRET, SRET, WFI, trap, and device access. Interrupt state can change only at those points: device lines and `mtime` change only during device accesses or between batches. |
 | Polling, lockstep profile | Like Spike: at chunk start, after every Zicsr instruction, MRET, and SRET, and immediately before every Zicsr instruction. |
 
 ## Floating point

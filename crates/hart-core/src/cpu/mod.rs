@@ -89,7 +89,8 @@ pub struct Cpu {
     pub fp: fp::FpState,
     pub mmu: mmu::Mmu,
     pub pmp: pmp::Pmp,
-    /// LR/SC reservation: the physical address of the reserved doubleword-aligned granule.
+    /// LR/SC reservation: the physical address of the last LR. An SC succeeds only at
+    /// exactly this address.
     pub reservation: Option<u64>,
     /// True while stalled in WFI.
     pub waiting: bool,
