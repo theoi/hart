@@ -120,53 +120,71 @@ impl Htif {
         std::mem::take(&mut self.console_out)
     }
 
-    /// Runs one iteration of Spike's HTIF loop. Returns `true` when a
-    /// command was found in `tohost`; Spike runs no guest instructions in
-    /// such an iteration.
+    /// Runs one iteration of Spike's HTIF loop: [`Htif::check_tohost`]
+    /// then [`Htif::service`]. Returns `true` when a command was found in
+    /// `tohost`; Spike runs no guest instructions in such an iteration.
     pub fn poll(&mut self, mem: &mut impl HtifMemory) -> bool {
-        let Some(config) = self.config.clone() else {
+        let handled = self.check_tohost(mem);
+        self.service(mem);
+        handled
+    }
+
+    /// Reads `tohost`; a non-zero value is cleared and handled. Returns
+    /// whether there was a command.
+    pub fn check_tohost(&mut self, mem: &mut impl HtifMemory) -> bool {
+        let Some(config) = &self.config else {
             return false;
         };
-        let tohost = match mem.read_u64(config.tohost) {
-            Some(v) => v,
-            None => {
-                self.bad_address = true;
-                return false;
-            }
+        let tohost_addr = config.tohost;
+        let Some(tohost) = mem.read_u64(tohost_addr) else {
+            self.bad_address = true;
+            return false;
         };
-        if tohost != 0 {
-            mem.write_u64(config.tohost, 0);
-            self.handle(tohost);
+        if tohost == 0 {
+            return false;
         }
+        mem.write_u64(tohost_addr, 0);
+        self.handle(tohost);
+        true
+    }
+
+    /// Answers pending console reads and delivers one queued response to a
+    /// free `fromhost`, as Spike does after each loop iteration.
+    pub fn service(&mut self, mem: &mut impl HtifMemory) {
+        let Some(config) = &self.config else {
+            return;
+        };
+        let fromhost_addr = config.fromhost;
         self.tick();
-        if let Some(fromhost) = config.fromhost {
-            if let Some(&response) = self.fromhost_queue.front() {
-                match mem.read_u64(fromhost) {
-                    Some(0) => {
-                        mem.write_u64(fromhost, response);
-                        self.fromhost_queue.pop_front();
-                    }
-                    Some(_) => {}
-                    None => self.bad_address = true,
-                }
-            }
-        } else {
+        let Some(fromhost) = fromhost_addr else {
             self.fromhost_queue.clear();
+            return;
+        };
+        if let Some(&response) = self.fromhost_queue.front() {
+            match mem.read_u64(fromhost) {
+                Some(0) => {
+                    mem.write_u64(fromhost, response);
+                    self.fromhost_queue.pop_front();
+                }
+                Some(_) => {}
+                None => self.bad_address = true,
+            }
         }
-        tohost != 0
     }
 
     /// [`Htif::poll`] against the bus. When the guest exits, sets
     /// `bus.wires.halt` to [`Halt::TestExit`] with the exit code.
     pub fn poll_bus(&mut self, bus: &mut Bus) -> bool {
-        let had_exit = self.exit.is_some();
         let handled = self.poll(bus);
-        if !had_exit {
-            if let Some(code) = self.exit_code() {
-                bus.wires.halt.get_or_insert(Halt::TestExit(code));
-            }
-        }
+        self.sync_halt(bus);
         handled
+    }
+
+    /// Sets `bus.wires.halt` once the guest has exited through HTIF.
+    pub fn sync_halt(&self, bus: &mut Bus) {
+        if let Some(code) = self.exit_code() {
+            bus.wires.halt.get_or_insert(Halt::TestExit(code));
+        }
     }
 
     fn handle(&mut self, tohost: u64) {

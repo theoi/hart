@@ -22,9 +22,10 @@
 //! `fw_dynamic` boot.
 
 pub mod devicetree;
+pub mod spike;
 
 use crate::bus::{Bus, DeviceId};
-use crate::cpu::Cpu;
+use crate::cpu::{Cpu, CpuConfig, StepResult};
 use crate::devices::clint::{Clint, CLINT_BASE, CLINT_SIZE};
 use crate::devices::htif::Htif;
 use crate::devices::plic::{Plic, PLIC_BASE, PLIC_SIZE};
@@ -35,6 +36,9 @@ use crate::fdt::{Fdt, FdtError};
 use crate::irq::Halt;
 use crate::loader::{self, LoadError};
 use devicetree::{DeviceTreeConfig, TIMEBASE_HZ};
+use spike::{
+    BootRom, SpikeSoc, INTERLEAVE, SPIKE_CLINT_SIZE, SPIKE_PLIC_BASE, SPIKE_ROM_BASE, SPIKE_SOC_SIZE, TICKS_PER_CHUNK,
+};
 use std::fmt;
 
 pub const RAM_BASE: u64 = 0x8000_0000;
@@ -142,10 +146,28 @@ pub struct BootLayout {
     pub fw_dynamic_info: u64,
 }
 
+/// Which machine the board models.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Profile {
+    /// The QEMU-virt-compatible board that boots Linux.
+    Virt,
+    /// Bare-metal tests: HTIF, CLINT, and the test interrupt trigger.
+    Test,
+    /// Spike-compatible lockstep profile (see [`spike`]).
+    Spike,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Console {
+    Uart(DeviceId),
+    Spike(DeviceId),
+}
+
 pub struct Board {
     pub cpu: Cpu,
     pub bus: Bus,
-    uart: DeviceId,
+    profile: Profile,
+    console: Console,
     clint: DeviceId,
     htif: Htif,
     time: TimeSource,
@@ -256,10 +278,12 @@ impl Board {
             dtb: (dtb_addr, dtb_addr + dtb.len() as u64),
             fw_dynamic_info: info_addr,
         };
+        bus.tick();
         Ok(Self {
             cpu,
             bus,
-            uart,
+            profile: Profile::Virt,
+            console: Console::Uart(uart),
             clint,
             htif: Htif::disabled(),
             time: config.time,
@@ -287,10 +311,12 @@ impl Board {
         let loaded = loader::load_elf(&mut bus, elf)?;
         let htif = Htif::from_elf(&loaded).unwrap_or_else(Htif::disabled);
         let layout = BootLayout { entry: loaded.entry, kernel: None, dtb: (0, 0), fw_dynamic_info: 0 };
+        bus.tick();
         Ok(Self {
             cpu: Cpu::new(loaded.entry),
             bus,
-            uart,
+            profile: Profile::Test,
+            console: Console::Uart(uart),
             clint,
             htif,
             time: config.time,
@@ -302,6 +328,61 @@ impl Board {
             layout,
             resume_stuck_wfi: true,
         })
+    }
+
+    /// Builds the Spike lockstep profile (see [`spike`]): `firmware` is the
+    /// OpenSBI ELF (`fw_jump.elf`), `kernel` goes to 0x8020_0000, and `dtb`
+    /// (the same blob given to Spike with `--dtb`) goes into the reset ROM.
+    pub fn new_spike(
+        config: BoardConfig,
+        firmware: &[u8],
+        kernel: Option<&[u8]>,
+        dtb: &[u8],
+    ) -> Result<Self, BoardError> {
+        Fdt::parse(dtb).map_err(BoardError::Dtb)?;
+        let mut bus = Bus::new(RAM_BASE, config.ram_size as usize);
+        let rom = BootRom::spike(RAM_BASE, dtb);
+        bus.add_device(SPIKE_ROM_BASE, rom.size(), Box::new(rom));
+        let clint = bus.add_device(CLINT_BASE, SPIKE_CLINT_SIZE, Box::new(Clint::new()));
+        let soc = bus.add_device(SPIKE_PLIC_BASE, SPIKE_SOC_SIZE, Box::new(SpikeSoc::new()));
+        let loaded = loader::load_elf(&mut bus, firmware)?;
+        let htif = Htif::from_elf(&loaded).unwrap_or_else(Htif::disabled);
+        let kernel_range = match kernel {
+            Some(image) => {
+                loader::load_raw(&mut bus, KERNEL_ADDR, image)?;
+                Some((KERNEL_ADDR, KERNEL_ADDR + image.len() as u64))
+            }
+            None => None,
+        };
+        let mut cpu = Cpu::new(SPIKE_ROM_BASE);
+        cpu.config = CpuConfig::spike();
+        bus.tick();
+        let rom_dtb = SPIKE_ROM_BASE + 0x20;
+        Ok(Self {
+            cpu,
+            bus,
+            profile: Profile::Spike,
+            console: Console::Spike(soc),
+            clint,
+            htif,
+            time: TimeSource::Instructions { insns_per_tick: 100 },
+            insn_carry: 0,
+            host_last_ns: None,
+            host_carry: 0,
+            instret: 0,
+            dtb: dtb.to_vec(),
+            layout: BootLayout {
+                entry: SPIKE_ROM_BASE,
+                kernel: kernel_range,
+                dtb: (rom_dtb, rom_dtb + dtb.len() as u64),
+                fw_dynamic_info: 0,
+            },
+            resume_stuck_wfi: false,
+        })
+    }
+
+    pub fn profile(&self) -> Profile {
+        self.profile
     }
 
     /// Whether HTIF is connected (test profile with a `tohost` symbol).
@@ -357,11 +438,24 @@ impl Board {
 
     /// Queues console input for the guest.
     pub fn push_input(&mut self, bytes: &[u8]) {
-        if let Some(uart) = self.bus.device_mut::<Uart>(self.uart) {
-            uart.push_input(bytes);
+        match self.console {
+            Console::Uart(id) => {
+                if let Some(uart) = self.bus.device_mut::<Uart>(id) {
+                    uart.push_input(bytes);
+                }
+            }
+            Console::Spike(id) => {
+                if let Some(soc) = self.bus.device_mut::<SpikeSoc>(id) {
+                    soc.push_input(bytes);
+                }
+            }
         }
         self.htif.push_console_input(bytes);
-        self.bus.tick();
+        if self.profile != Profile::Spike {
+            // Let the UART raise its line now; in lockstep, input waits for
+            // the next chunk boundary as in Spike.
+            self.bus.tick();
+        }
     }
 
     /// Takes the console output produced since the last call.
@@ -373,8 +467,17 @@ impl Board {
 
     /// Appends the console output produced since the last call to `out`.
     pub fn drain_output(&mut self, out: &mut Vec<u8>) {
-        if let Some(uart) = self.bus.device_mut::<Uart>(self.uart) {
-            uart.drain_output_into(out);
+        match self.console {
+            Console::Uart(id) => {
+                if let Some(uart) = self.bus.device_mut::<Uart>(id) {
+                    uart.drain_output_into(out);
+                }
+            }
+            Console::Spike(id) => {
+                if let Some(soc) = self.bus.device_mut::<SpikeSoc>(id) {
+                    soc.drain_output_into(out);
+                }
+            }
         }
         out.extend(self.htif.take_console_output());
     }
@@ -384,6 +487,9 @@ impl Board {
     /// [`Board::ns_until_timer`] or new input, then call again). Returns the
     /// number of instructions retired.
     pub fn run(&mut self, max: u64) -> u64 {
+        if self.profile == Profile::Spike {
+            return self.run_lockstep(max);
+        }
         let start = self.instret;
         let mut steps_done = 0;
         if let TimeSource::Host(_) = self.time {
@@ -414,6 +520,45 @@ impl Board {
             }
         }
         self.instret - start
+    }
+
+    /// The Spike profile's run loop (`htif_t::run` around `sim_t::step`).
+    fn run_lockstep(&mut self, max: u64) -> u64 {
+        let start = self.instret;
+        let mut steps = 0;
+        while steps < max && self.bus.wires.halt.is_none() {
+            if !self.htif.check_tohost(&mut self.bus) {
+                steps += self.lockstep_chunk();
+            }
+            self.htif.service(&mut self.bus);
+            self.htif.sync_halt(&mut self.bus);
+        }
+        self.instret - start
+    }
+
+    /// One `processor_t::step(INTERLEAVE)` plus the device tick that
+    /// follows it. Returns the steps taken (instructions and traps).
+    fn lockstep_chunk(&mut self) -> u64 {
+        self.cpu.irq_poll = true;
+        let mut retired = 0;
+        let mut steps = 0;
+        while retired < INTERLEAVE {
+            steps += 1;
+            match self.cpu.step(&mut self.bus) {
+                StepResult::Retired => {
+                    retired += 1;
+                    if self.cpu.wfi_retired {
+                        break;
+                    }
+                }
+                StepResult::Trapped(_) | StepResult::Waiting => break,
+            }
+        }
+        self.instret += retired;
+        self.cpu.reservation = None;
+        self.bus.wires.mtime = self.bus.wires.mtime.wrapping_add(TICKS_PER_CHUNK);
+        self.bus.tick();
+        steps.max(1)
     }
 
     /// With instruction time, jumps `mtime` to the next timer interrupt.

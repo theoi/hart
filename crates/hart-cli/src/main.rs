@@ -6,6 +6,7 @@ mod term;
 
 use clap::Parser;
 use hart_core::board::{Board, BoardConfig, PowerState, TimeSource, DEFAULT_BOOTARGS};
+use hart_core::loader;
 use hart_core::trace::SpikeCommitLog;
 use script::{Script, ScriptEvent, Watch};
 use std::io::{self, BufWriter, Read, Write};
@@ -24,7 +25,13 @@ const EXIT_LIMIT: u8 = 124;
 #[command(name = "hart", version, about = "A from-scratch RV64GC RISC-V computer that boots Linux")]
 #[command(after_help = "Console: C-a x exits, C-a h lists the other escapes.")]
 struct Args {
-    /// Directory with fw_jump.bin and Image, used when --bios or --kernel is not given
+    /// Machine: "virt" (boots Linux) or "spike" (Spike-compatible lockstep profile; needs
+    /// --dtb and an ELF --bios such as fw_jump.elf)
+    #[arg(long, value_name = "NAME", default_value = "virt", value_parser = ["virt", "spike"])]
+    profile: String,
+
+    /// Directory with fw_jump.bin (fw_jump.elf for --profile spike) and Image, used when
+    /// --bios or --kernel is not given
     #[arg(long, value_name = "DIR")]
     images: Option<PathBuf>,
 
@@ -126,10 +133,11 @@ impl Images {
             return Ok(Self { elf: Some(read_file(elf)?), bios: Vec::new(), kernel: None, dtb: None });
         }
         let from_dir = |name: &str| args.images.as_ref().map(|d| d.join(name));
+        let default_bios = if args.profile == "spike" { "fw_jump.elf" } else { "fw_jump.bin" };
         let bios = args
             .bios
             .clone()
-            .or_else(|| from_dir("fw_jump.bin"))
+            .or_else(|| from_dir(default_bios))
             .ok_or("no firmware: pass --bios FILE, --images DIR, or --elf FILE")?;
         let kernel = args.kernel.clone().or_else(|| from_dir("Image"));
         Ok(Self {
@@ -150,6 +158,13 @@ impl Images {
         };
         let mut board = match &self.elf {
             Some(elf) => Board::new_test(config, elf),
+            None if args.profile == "spike" => {
+                let dtb = self.dtb.as_deref().ok_or("--profile spike needs --dtb (the DTB given to Spike)")?;
+                if !loader::is_elf(&self.bios) {
+                    return Err("--profile spike needs an ELF firmware (fw_jump.elf)".to_string());
+                }
+                Board::new_spike(config, &self.bios, self.kernel.as_deref(), dtb)
+            }
             None => Board::new(config, &self.bios, self.kernel.as_deref(), self.dtb.as_deref()),
         }
         .map_err(|e| e.to_string())?;
