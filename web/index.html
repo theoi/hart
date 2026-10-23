@@ -60,23 +60,30 @@
               It runs in a Web Worker in this tab and boots unmodified upstream guest software: OpenSBI 1.8 firmware, a
               Linux 6.18 LTS kernel, and a BusyBox shell. Nothing is sent to a server.
             </p>
-            <p class="try">
-              Try
-              <button class="chip" type="button" data-cmd="uname -a">uname -a</button>
-              <button class="chip" type="button" data-cmd="cat /proc/cpuinfo">cat /proc/cpuinfo</button>
-              <button class="chip" type="button" data-cmd="mandelbrot">mandelbrot</button>
-            </p>
+            <div class="try">
+              <span class="try-label">Try</span>
+              <span class="chips">
+                <button class="chip" type="button" data-cmd="uname -a">uname -a</button>
+                <button class="chip" type="button" data-cmd="cat /proc/cpuinfo">cat /proc/cpuinfo</button>
+                <button class="chip" type="button" data-cmd="mandelbrot">mandelbrot</button>
+              </span>
+            </div>
           </article>
 
           <article class="about-col">
             <h2>How it was validated</h2>
             <ul class="checks">
-              <li><a href="https://github.com/theoi/hart/tree/main/tests/riscv-tests" target="_blank" rel="noopener"><strong>riscv-tests</strong></a>: every rv64 ui, um, ua, uc, uf, ud, mi, and si test passes.</li>
-              <li><a href="https://github.com/theoi/hart/tree/main/tests/act4" target="_blank" rel="noopener"><strong>riscv-arch-test</strong></a> (ACT4): expected results from the Sail reference model, interrupts included.</li>
-              <li><a href="https://github.com/theoi/hart/tree/main/tests/testfloat" target="_blank" rel="noopener"><strong>Berkeley TestFloat</strong></a>: the FPU is bit-exact in every rounding mode, with exact flags.</li>
-              <li><a href="https://github.com/theoi/hart/tree/main/tests/diff" target="_blank" rel="noopener"><strong>Spike</strong></a>: instruction-by-instruction commit logs match the reference simulator, for random programs and the Linux boot.</li>
-              <li><a href="https://github.com/theoi/hart/tree/main/tests/web" target="_blank" rel="noopener"><strong>Browser tests</strong></a>: Playwright boots this page in Chromium and Firefox and checks a command script.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/riscv-tests" target="_blank" rel="noopener"><strong>riscv-tests</strong></a>: all 134 of 134 rv64 ui, um, ua, uc, uf, ud, mi, and si tests pass.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/act4" target="_blank" rel="noopener"><strong>riscv-arch-test</strong></a> (ACT4): all 592 of 592 tests generated for hart's configuration pass, interrupts included, against expected results from the Sail reference model (39 Sv48 tests excluded: hart implements Sv39 only).</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/testfloat" target="_blank" rel="noopener"><strong>Berkeley TestFloat</strong></a>: 33.2 billion vectors for add, subtract, multiply, divide, square root, fused multiply-add, comparisons, and conversions, in all five rounding modes, with no mismatch in results or exception flags.</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/diff" target="_blank" rel="noopener"><strong>Spike</strong></a>: per-instruction commit logs match the reference simulator for 2,000 randomized programs and for the Linux boot, instruction by instruction, from reset through the shell prompt (150 million instructions).</li>
+              <li><a href="https://github.com/theoi/hart/tree/main/tests/boot" target="_blank" rel="noopener"><strong>Boot tests</strong></a>: natively and on this page, Linux boots to the shell and a fixed command script produces the expected output. Headless Chromium reaches the prompt in a median of 1.15 s over 5 runs on a 4-vCPU machine, served locally; Firefox passes too.</li>
             </ul>
+            <p class="note">
+              Results for commit <a href="https://github.com/theoi/hart/commit/3f756f95472f84ca4e0139f4c1b71f415181ce2e" target="_blank" rel="noopener"><code>3f756f9</code></a>.
+              The <a href="https://github.com/theoi/hart#how-hart-was-validated" target="_blank" rel="noopener">evidence</a>
+              and the commands to rerun each check are in the README.
+            </p>
           </article>
 
           <article class="about-col">

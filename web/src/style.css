@@ -313,6 +313,16 @@ a:hover {
   font-weight: 600;
 }
 
+.about .note {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.about .note a {
+  color: var(--text-2);
+}
+
 .checks a {
   text-decoration-color: rgba(245, 181, 63, 0.4);
 }
@@ -366,9 +376,24 @@ a:hover {
 
 .try {
   display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.try-label {
+  flex: none;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 26px;
+}
+
+/* Wrapped chips line up under the first chip, not under the label. */
+.chips {
+  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .chip {
