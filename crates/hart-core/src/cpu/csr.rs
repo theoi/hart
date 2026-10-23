@@ -371,6 +371,12 @@ pub fn write(cpu: &mut Cpu, bus: &Bus, addr: u16, value: u64, insn: u32) -> Resu
                 return Err(illegal);
             }
             cpu.mmu.flush();
+            // A pmpcfg register that holds only read-only-zero entries (pmpcfg4-14) is
+            // not logged: Spike's write reports success only if it covers an entry below
+            // its PMP count.
+            if addr <= PMPCFG15 && (addr - PMPCFG0) as usize * 4 >= super::pmp::PMP_ENTRIES {
+                return Ok(());
+            }
         }
         SCONTEXT => c.scontext = value & SCONTEXT_WMASK,
         MCONTEXT => c.mcontext = value & MCONTEXT_WMASK,
@@ -680,6 +686,21 @@ mod tests {
         assert_eq!(read(&cpu, &bus, MIP, 0), Ok(bits::SEIP | bits::SSIP));
         write(&mut cpu, &bus, MIP, 0, 0).unwrap();
         assert_eq!(take_csr_log(&mut cpu), [(MVIP, bits::SSIP), (MIP, 0)]);
+    }
+
+    #[test]
+    fn writes_to_pmpcfg_registers_without_usable_entries_are_not_logged() {
+        let mut cpu = Cpu::with_config(0x8000_0000, CpuConfig::spike());
+        cpu.set_tracer(Some(Box::new(Discard)));
+        let bus = Bus::new(0x8000_0000, 0x1000);
+        for n in [4u16, 6, 8, 10, 12, 14] {
+            write(&mut cpu, &bus, PMPCFG0 + n, !0, 0).unwrap();
+            assert_eq!(read(&cpu, &bus, PMPCFG0 + n, 0), Ok(0));
+        }
+        write(&mut cpu, &bus, PMPADDR0 + 16, !0, 0).unwrap();
+        assert_eq!(take_csr_log(&mut cpu), [(PMPADDR0 + 16, 0)]);
+        write(&mut cpu, &bus, PMPCFG0 + 2, 0x1f, 0).unwrap();
+        assert_eq!(take_csr_log(&mut cpu), [(PMPCFG0 + 2, 0x1f)]);
     }
 
     #[test]
