@@ -793,6 +793,49 @@ mod tests {
         assert_eq!(board.power_state(), PowerState::Exit(0));
     }
 
+    fn spike_board(code: &[u32]) -> Board {
+        let dtb = devicetree::virt_device_tree(&DeviceTreeConfig::new(RAM_BASE, MIB));
+        let fw = test_elf(code);
+        let config = BoardConfig { ram_size: MIB, ..BoardConfig::default() };
+        Board::new_spike(config, &fw, None, &dtb).unwrap()
+    }
+
+    #[test]
+    fn spike_profile_starts_in_the_reset_rom() {
+        let mut board = spike_board(&[0x0000_006f]);
+        assert_eq!(board.profile(), Profile::Spike);
+        assert_eq!(board.cpu.pc, 0x1000);
+        assert_eq!(board.cpu.config.marchid, 5);
+        assert_eq!(board.bus.wires.hart_irq & crate::irq::bits::MTIP, crate::irq::bits::MTIP, "MTIP from reset");
+        // The five ROM instructions, then the firmware's `j .`.
+        board.run(5);
+        assert_eq!(board.cpu.pc, RAM_BASE);
+        assert_eq!(board.cpu.x[10], 0);
+        assert_eq!(board.cpu.x[11], 0x1020);
+    }
+
+    #[test]
+    fn spike_chunks_advance_mtime_by_50() {
+        let mut board = spike_board(&[0x0000_006f]);
+        board.run(12_000);
+        // Chunks of 5000 steps: 0..5000, 5000..10000, 10000..15000.
+        assert_eq!(board.mtime(), 150);
+        assert_eq!(board.instret(), 15_000);
+    }
+
+    #[test]
+    fn spike_trap_ends_the_chunk() {
+        // mtvec = 0x8000_0010 (auipc t0, 0; addi t0, t0, 16; csrw mtvec, t0),
+        // then ecall forever: each ecall traps to the handler, which is
+        // another ecall.
+        let code = [0x0000_0297, 0x0102_8293, 0x3052_9073, 0x0000_0013, 0x0000_0073];
+        let mut board = spike_board(&code);
+        board.run(5 + 4);
+        let before = board.mtime();
+        board.run(10);
+        assert_eq!(board.mtime() - before, 10 * TICKS_PER_CHUNK, "one chunk per trap");
+    }
+
     #[test]
     fn console_queues_and_power_state() {
         let mut board = Board::new(BoardConfig::default(), &[0; 64], None, None).unwrap();
