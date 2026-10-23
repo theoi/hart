@@ -134,7 +134,9 @@ for (const [role, name] of roles) {
     if (want !== hash) throw new Error(`${name}: sha256 ${hash} does not match SHA256SUMS (${want})`);
   }
   const gz = gzipSync(data, { level: 9 });
-  const file = `${name}.gz`;
+  // Content-addressed names: Pages caches files for 10 minutes, and the manifest (fetched
+  // with revalidation) must never pair with a stale image.
+  const file = `${name}.${hash.slice(0, 12)}.gz`;
   await writeFile(join(outDir, file), gz);
   entries.push({ role, name, url: file, size: data.length, encodedSize: gz.length, encoding: 'gzip', sha256: hash });
   console.log(`${name}: ${data.length} bytes -> ${file} ${gz.length} bytes${sums ? ' (sha256 verified)' : ''}`);
