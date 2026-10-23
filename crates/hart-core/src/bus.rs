@@ -11,12 +11,18 @@ pub struct BusFault;
 /// A memory-mapped device.
 ///
 /// `offset` is relative to the device's base address. `size` is 1, 2, 4, or 8, and the
-/// access is naturally aligned: misaligned accesses to device regions raise access faults
-/// before reaching the device. Read values are returned zero-extended in the low `size`
-/// bytes; written values carry the data in the low `size` bytes.
+/// access is naturally aligned unless [`Device::any_alignment`] says otherwise:
+/// misaligned accesses to other devices raise access faults before reaching the device.
+/// An access never extends past the end of the device's region. Read values are returned
+/// zero-extended in the low `size` bytes; written values carry the data in the low `size`
+/// bytes.
 pub trait Device: Any {
     fn read(&mut self, offset: u64, size: u8, wires: &mut Wires) -> Result<u64, BusFault>;
     fn write(&mut self, offset: u64, size: u8, value: u64, wires: &mut Wires) -> Result<(), BusFault>;
+    /// Whether the device takes accesses at any alignment, as memory does (a ROM).
+    fn any_alignment(&self) -> bool {
+        false
+    }
     /// Called by the board's run loop between instruction batches, after `wires.mtime`
     /// has been advanced. Devices update interrupt lines here.
     fn tick(&mut self, _wires: &mut Wires) {}
@@ -319,7 +325,8 @@ impl Bus {
         self.is_ram(paddr, 1) || self.regions.iter().any(|r| paddr.wrapping_sub(r.base) < r.size)
     }
 
-    /// Physical read. RAM accepts any alignment; devices require natural alignment.
+    /// Physical read. RAM accepts any alignment; devices require natural alignment unless
+    /// they accept any ([`Device::any_alignment`]).
     #[inline]
     pub fn read(&mut self, paddr: u64, size: u8) -> Result<u64, BusFault> {
         if let Some(v) = self.ram.read(paddr, size) {
@@ -328,7 +335,8 @@ impl Bus {
         self.read_mmio(paddr, size)
     }
 
-    /// Physical write. RAM accepts any alignment; devices require natural alignment.
+    /// Physical write. RAM accepts any alignment; devices require natural alignment unless
+    /// they accept any ([`Device::any_alignment`]).
     #[inline]
     pub fn write(&mut self, paddr: u64, size: u8, value: u64) -> Result<(), BusFault> {
         if self.ram.write(paddr, size, value).is_some() {
@@ -352,12 +360,13 @@ impl Bus {
     }
 
     fn region_for(&self, paddr: u64, size: u8) -> Result<(usize, u64), BusFault> {
-        if !matches!(size, 1 | 2 | 4 | 8) || paddr & (size as u64 - 1) != 0 {
+        if !matches!(size, 1 | 2 | 4 | 8) {
             return Err(BusFault);
         }
+        let aligned = paddr & (size as u64 - 1) == 0;
         for (i, r) in self.regions.iter().enumerate() {
             let off = paddr.wrapping_sub(r.base);
-            if off < r.size && size as u64 <= r.size - off {
+            if off < r.size && size as u64 <= r.size - off && (aligned || r.dev.any_alignment()) {
                 return Ok((i, off));
             }
         }
@@ -424,5 +433,31 @@ mod tests {
         assert_eq!(bus.read(0x1000_0011, 2), Err(BusFault));
         assert_eq!(bus.read(0x2000_0000, 4), Err(BusFault));
         assert_eq!(bus.device_mut::<Scratch>(id).map(|s| s.0), Some(7));
+    }
+
+    struct Rom([u8; 16]);
+    impl Device for Rom {
+        fn read(&mut self, off: u64, size: u8, _w: &mut Wires) -> Result<u64, BusFault> {
+            let mut b = [0u8; 8];
+            b[..size as usize].copy_from_slice(&self.0[off as usize..off as usize + size as usize]);
+            Ok(u64::from_le_bytes(b))
+        }
+        fn write(&mut self, _off: u64, _size: u8, _v: u64, _w: &mut Wires) -> Result<(), BusFault> {
+            Err(BusFault)
+        }
+        fn any_alignment(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn any_alignment_devices_take_misaligned_accesses_within_their_region() {
+        let mut bus = Bus::new(0x8000_0000, 4096);
+        bus.add_device(0x1000, 16, Box::new(Rom(core::array::from_fn(|i| i as u8))));
+        bus.add_device(0x1000_0000, 0x100, Box::new(Scratch(0)));
+        assert_eq!(bus.read(0x1003, 8), Ok(0x0a09_0807_0605_0403));
+        assert_eq!(bus.read(0x1009, 8), Err(BusFault), "past the end of the region");
+        assert_eq!(bus.write(0x1003, 4, 0), Err(BusFault));
+        assert_eq!(bus.read(0x1000_0004, 8), Err(BusFault), "other devices still need alignment");
     }
 }

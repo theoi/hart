@@ -78,8 +78,15 @@ impl Device for BootRom {
         Ok(u64::from_le_bytes(buf))
     }
 
+    // Stores fault, as rom_device_t::store fails in Spike.
     fn write(&mut self, _offset: u64, _size: u8, _value: u64, _wires: &mut Wires) -> Result<(), BusFault> {
         Err(BusFault)
+    }
+
+    // Spike's rom_device_t::load copies any length from any offset, and Spike sends
+    // a misaligned load within a page to the device whole.
+    fn any_alignment(&self) -> bool {
+        true
     }
 }
 

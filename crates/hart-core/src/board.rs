@@ -941,4 +941,23 @@ mod tests {
         assert!(board.is_waiting());
         assert_eq!(board.dead_stop(), None);
     }
+
+    #[test]
+    fn spike_reset_rom_takes_misaligned_loads_and_faults_stores() {
+        let mut board = spike_board(&[
+            0x0000_12b7, // lui t0, 0x1 (the reset ROM)
+            0x0032_b503, // ld a0, 3(t0)
+            0x0000_0317, // auipc t1, 0
+            0x0103_0313, // addi t1, t1, 16
+            0x3053_1073, // csrw mtvec, t1
+            0x0002_81a3, // sb zero, 3(t0)
+            0x0000_006f, // j . (the trap handler)
+        ]);
+        board.run(20);
+        // Bytes 3..11 of the ROM: the tail of `auipc t0, 0`, `addi a1, t0, 32`, and the
+        // head of `csrr a0, mhartid`.
+        assert_eq!(board.cpu.x[10], 0x4025_7302_0285_9300);
+        assert_eq!((board.cpu.csr.mcause, board.cpu.csr.mtval, board.cpu.csr.mepc), (7, 0x1003, RAM_BASE + 0x14));
+        assert_eq!(board.bus.read(CLINT_BASE + 4, 8), Err(crate::bus::BusFault), "devices still need alignment");
+    }
 }
