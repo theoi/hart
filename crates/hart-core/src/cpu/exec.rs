@@ -290,7 +290,7 @@ fn execute_rare<const TRACE: bool>(
             let q = if y == 0 { -1 } else { x.wrapping_div(y) };
             cpu.set_x_t::<TRACE>(rd, q as u64);
         }
-        Divu => cpu.set_x_t::<TRACE>(rd, if b == 0 { u64::MAX } else { a / b }),
+        Divu => cpu.set_x_t::<TRACE>(rd, a.checked_div(b).unwrap_or(u64::MAX)),
         Rem => {
             let (x, y) = (a as i64, b as i64);
             let r = if y == 0 { x } else { x.wrapping_rem(y) };
@@ -304,7 +304,7 @@ fn execute_rare<const TRACE: bool>(
         }
         Divuw => {
             let (x, y) = (a as u32, b as u32);
-            let q = if y == 0 { u32::MAX } else { x / y };
+            let q = x.checked_div(y).unwrap_or(u32::MAX);
             cpu.set_x_t::<TRACE>(rd, sext32(q as u64));
         }
         Remw => {
